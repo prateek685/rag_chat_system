@@ -1,0 +1,93 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+// url is intentionally absent — Prisma 7 reads the connection string from
+// prisma.config.ts (for CLI) and from the PrismaPg adapter (for runtime).
+// The pgvector extension is enabled via init-db.sql on first container start.
+datasource db {
+  provider = "postgresql"
+}
+
+enum DocumentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum MessageRole {
+  user
+  assistant
+  system
+}
+
+// Session is created client-side (UUIDv4 in localStorage) and upserted on first request.
+model Session {
+  id             String    @id
+  runningSummary String?   @map("running_summary")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  documents Document[]
+  messages  Message[]
+
+  @@map("sessions")
+}
+
+model Document {
+  id           String         @id @default(uuid())
+  sessionId    String         @map("session_id")
+  filename     String
+  /// SHA-256 hex digest — unique per (sessionId, fileHash) to prevent duplicate uploads.
+  fileHash     String         @map("file_hash")
+  status       DocumentStatus @default(PENDING)
+  errorMessage String?        @map("error_message")
+  jobId        String?        @map("job_id")
+  tokenCount   Int?           @map("token_count")
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+
+  session Session          @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  chunks  DocumentChunk[]
+
+  /// Prevent re-uploading the same file content within a session.
+  @@unique([sessionId, fileHash])
+  @@map("documents")
+}
+
+model DocumentChunk {
+  id         String   @id @default(uuid())
+  documentId String   @map("document_id")
+  sessionId  String   @map("session_id")
+  content    String
+  metadata   Json?
+  /// vector(1536) — populated via $executeRaw; not writable through Prisma ORM.
+  embedding     Unsupported("vector(1536)")?
+  /// tsvector — auto-populated by the tsvectorupdate trigger on insert/update.
+  searchVector  Unsupported("tsvector")?    @map("search_vector")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  // Speeds up all session-scoped retrieval queries (every hybrid search filters by sessionId).
+  @@index([sessionId])
+  @@map("document_chunks")
+}
+
+model Message {
+  id        String      @id @default(uuid())
+  sessionId String      @map("session_id")
+  role      MessageRole
+  content   String
+  /// Langfuse trace ID — links this message to the observability trace.
+  traceId   String?     @map("trace_id")
+  citations Json?
+  createdAt DateTime    @default(now()) @map("created_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  // Composite index for the sliding-window memory query (fetch last N messages by session, ordered by time).
+  @@index([sessionId, createdAt(sort: Asc)])
+  @@map("messages")
+}
