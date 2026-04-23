@@ -1,3 +1,4 @@
+import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { PrismaService } from './prisma.service';
 
@@ -24,17 +25,25 @@ describe('PrismaService', () => {
   let service: PrismaService;
 
   beforeEach(async () => {
-    process.env.DATABASE_URL = 'postgresql://test:test@localhost:5432/test';
-
     const module: TestingModule = await Test.createTestingModule({
-      providers: [PrismaService],
+      providers: [
+        PrismaService,
+        {
+          provide: ConfigService,
+          useValue: {
+            getOrThrow: (key: string) => {
+              if (key === 'DATABASE_URL') return 'postgresql://test:test@localhost:5432/test';
+              throw new Error(`Unexpected config key: ${key}`);
+            },
+          },
+        },
+      ],
     }).compile();
 
     service = module.get<PrismaService>(PrismaService);
   });
 
   afterEach(() => {
-    delete process.env.DATABASE_URL;
     jest.clearAllMocks();
   });
 

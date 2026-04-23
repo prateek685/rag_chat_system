@@ -22,6 +22,9 @@ export const envValidationSchema = Joi.object({
   LANGFUSE_HOST: Joi.string().uri().required(),
 
   NEXT_PUBLIC_API_URL: Joi.string().uri().optional(),
+  FRONTEND_URL: Joi.string().uri().default('http://localhost:3001'),
+  PGADMIN_DEFAULT_EMAIL: Joi.string().email().optional(),
+  PGADMIN_DEFAULT_PASSWORD: Joi.string().optional(),
 });
 
 export interface EnvConfig {
@@ -34,4 +37,5 @@ export interface EnvConfig {
   LANGFUSE_PUBLIC_KEY: string;
   LANGFUSE_SECRET_KEY: string;
   LANGFUSE_HOST: string;
+  FRONTEND_URL: string;
 }
