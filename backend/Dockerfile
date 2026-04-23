@@ -12,7 +12,7 @@ RUN npm run build && npm prune --omit=dev
 # ── Stage 2: Run ─────────────────────────────────────────────────────────────
 FROM node:20-alpine AS runner
 
-# postgresql-client provides psql for running manual_indexes.sql after migrations
+# postgresql-client provides psql used by the migrate service to apply manual_indexes.sql
 RUN apk add --no-cache postgresql-client
 
 ENV NODE_ENV=production
