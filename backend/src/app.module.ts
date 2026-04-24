@@ -7,6 +7,7 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { envValidationSchema } from './config/env.config';
 import { PrismaModule } from './modules/prisma/prisma.module';
 import { RedisModule } from './modules/redis/redis.module';
+import { DocumentModule } from './modules/document/document.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { RedisModule } from './modules/redis/redis.module';
     }),
     PrismaModule,
     RedisModule,
+    DocumentModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: HttpExceptionFilter },

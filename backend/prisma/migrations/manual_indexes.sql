@@ -7,9 +7,11 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- HNSW index for ultra-fast dense cosine-distance vector search.
--- ef_construction=64 balances build time vs. recall for 1536-dim embeddings.
+-- Uses halfvec_cosine_ops because the embedding column is halfvec(2048).
+-- halfvec lifts the HNSW dimension cap from 2000 to 4000 (pgvector >= 0.7.0).
+-- ef_construction=64 balances build time vs. recall. Rebuild with DROP/CREATE if switching models.
 CREATE INDEX IF NOT EXISTS document_chunks_embedding_idx
-  ON document_chunks USING hnsw (embedding vector_cosine_ops)
+  ON document_chunks USING hnsw (embedding halfvec_cosine_ops)
   WITH (m = 16, ef_construction = 64);
 
 -- GIN index for full-text keyword search (tsvector BM25).

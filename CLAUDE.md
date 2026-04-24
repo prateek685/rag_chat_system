@@ -137,7 +137,9 @@ CREATE TRIGGER tsvectorupdate BEFORE INSERT OR UPDATE ON document_chunks
 See `.env.example`. Required at runtime:
 - `DATABASE_URL`
 - `REDIS_HOST`, `REDIS_PORT`
-- `OPENAI_API_KEY`
+- `OPENROUTER_API_KEY` — single credential for all LLM calls (embeddings, generation, routing)
+- `EMBEDDING_MODEL`, `GENERATOR_MODEL`, `ROUTER_MODEL` — model names (defaults to free-tier OpenRouter models; switch to `openai/gpt-4o` etc. to use OpenAI via OpenRouter proxy)
+- `EMBEDDING_DIMENSIONS` — must match the vector() column type (default 1536)
 - `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`
 
 ## Testing Standards
@@ -332,6 +334,7 @@ try {
 - Prefer `view_range` over reading entire files. If you need a function, find it — don't read 500 lines to get to line 420.
 - When generating code, write it once correctly. Do not produce a draft and then immediately rewrite it in the same response.
 - Batch related reads into the minimum number of tool calls. Read `chat.service.ts` and `chat.service.spec.ts` together if you need both, not sequentially with commentary in between.
+- **NEVER read `.env`, `.env.local`, `.env.production`, or any file whose name starts with `.env`.** These files contain secrets. If you need to know which env vars are required, read `.env.example` only. Never cat, grep, or scan `.env` files under any circumstances — not for debugging, not for context, not to verify values.
 
 ### 2. Surgical Edits — Never Rewrite What You Aren't Changing
 - Use `str_replace` for all file modifications. Identify the exact lines that need to change and replace only those.
@@ -347,6 +350,25 @@ try {
 - If you are mid-task and realise the scope has grown (e.g., a bug fix requires a schema change), stop and flag it before proceeding. Do not silently expand scope.
 - When a task is complete, summarise only what changed — file name, function or block modified, and why. Do not re-explain the entire system.
 - If context about a prior decision is unclear, check `CLAUDE.md` and the relevant skill file before asking. Most architectural decisions are already recorded here.
+
+### 4. Implementation Fidelity — No Drift from the Plan
+**This is a hard rule. Violations will be treated as bugs, not style differences.**
+
+- Before writing any code, confirm the relevant phase and milestone in the memory files under `memory/`. If no plan exists for the area, ask before proceeding.
+- Implement exactly what the plan specifies. Do not add features, change interfaces, swap libraries, alter data models, or introduce abstractions that are not in the plan — even if they seem like improvements.
+- If the plan is ambiguous or appears wrong, **stop and ask**. Do not interpret your way around ambiguity.
+- If implementing the plan as written is technically impossible or would introduce a bug, **stop and flag it explicitly** — state which plan item is the blocker and why. Do not silently substitute an alternative.
+- Scope creep in a single PR is a merge-block: every file touched must trace back to a plan item. If you find yourself editing files outside the plan's scope, stop.
+- Design documents (schema, API contracts, LangGraph state shape, SSE event types) are frozen once a phase begins. Do not alter them mid-phase without an explicit user decision recorded in memory.
+
+### 5. Memory Updates After Every Phase
+**Required — not optional.**
+
+- When a phase or milestone is complete (or partially complete and blocked), update the relevant file(s) in `memory/` immediately — before reporting done to the user.
+- Record: what was built, what was skipped, any decisions that deviated from the original plan and why, and the current status of the next phase.
+- Use absolute dates (e.g. `2026-04-24`) not relative ones ("yesterday", "last week").
+- If a new phase starts that has no memory file yet, create one following the existing naming pattern (e.g. `project_m3_status.md`) and add it to `MEMORY.md`.
+- Memory files are the single source of truth for project progress. If the memory file says a step is done, it must be genuinely done — not just coded but untested.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph

@@ -62,8 +62,12 @@ model DocumentChunk {
   sessionId  String   @map("session_id")
   content    String
   metadata   Json?
-  /// vector(1536) — populated via $executeRaw; not writable through Prisma ORM.
-  embedding     Unsupported("vector(1536)")?
+  /// halfvec(2048) — populated via $executeRaw; not writable through Prisma ORM.
+  /// halfvec (16-bit float) lifts the HNSW dimension cap from 2000 to 4000.
+  /// nvidia/llama-nemotron-embed-vl-1b-v2:free outputs 2048-dim vectors.
+  /// To switch to openai/text-embedding-3-small (1536-dim): re-run the column migration
+  /// with halfvec(1536) and set EMBEDDING_DIMENSIONS=1536.
+  embedding     Unsupported("halfvec(2048)")?
   /// tsvector — auto-populated by the tsvectorupdate trigger on insert/update.
   searchVector  Unsupported("tsvector")?    @map("search_vector")
   createdAt  DateTime @default(now()) @map("created_at")
