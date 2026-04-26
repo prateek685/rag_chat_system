@@ -1,0 +1,58 @@
+[
+  {
+    "id": "test_001",
+    "user_prompt": "What was the Q3 revenue?",
+    "retrieved_context": "Q2 revenue was $2M. Q3 revenue reached $5M, driven by new product launches.",
+    "ideal_answer": "The Q3 revenue was $5M.",
+    "expected_chunk_ids": []
+  },
+  {
+    "id": "test_002",
+    "user_prompt": "What are the key features of the product?",
+    "retrieved_context": "The product includes real-time analytics, role-based access control, and a REST API.",
+    "ideal_answer": "The key features are real-time analytics, role-based access control, and a REST API.",
+    "expected_chunk_ids": []
+  },
+  {
+    "id": "test_003",
+    "user_prompt": "Who is the CEO of the company?",
+    "retrieved_context": "Jane Doe was appointed CEO in 2021. She previously served as CTO.",
+    "ideal_answer": "The CEO is Jane Doe, appointed in 2021.",
+    "expected_chunk_ids": []
+  },
+  {
+    "id": "test_004",
+    "user_prompt": "What is the refund policy?",
+    "retrieved_context": "Customers may request a full refund within 30 days of purchase. No refunds are issued after 30 days.",
+    "ideal_answer": "The refund policy allows a full refund within 30 days of purchase.",
+    "expected_chunk_ids": []
+  },
+  {
+    "id": "test_005",
+    "user_prompt": "How many employees does the company have?",
+    "retrieved_context": "As of 2024 the company employs 1,200 people across 8 offices worldwide.",
+    "ideal_answer": "The company has 1,200 employees across 8 offices.",
+    "expected_chunk_ids": []
+  },
+  {
+    "id": "test_006",
+    "user_prompt": "What programming languages are supported?",
+    "retrieved_context": "The SDK supports Python, TypeScript, Java, and Go.",
+    "ideal_answer": "The supported programming languages are Python, TypeScript, Java, and Go.",
+    "expected_chunk_ids": []
+  },
+  {
+    "id": "test_007",
+    "user_prompt": "What is the SLA for enterprise customers?",
+    "retrieved_context": "Enterprise customers receive a 99.9% uptime SLA with a 4-hour response time for critical issues.",
+    "ideal_answer": "Enterprise customers have a 99.9% uptime SLA and a 4-hour response time for critical issues.",
+    "expected_chunk_ids": []
+  },
+  {
+    "id": "test_008",
+    "user_prompt": "How is data encrypted?",
+    "retrieved_context": "All data is encrypted at rest using AES-256 and in transit using TLS 1.3.",
+    "ideal_answer": "Data is encrypted at rest with AES-256 and in transit with TLS 1.3.",
+    "expected_chunk_ids": []
+  }
+]

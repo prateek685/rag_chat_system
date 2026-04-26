@@ -1,20 +1,31 @@
+// jest.mock must appear before imports. Factory must be self-contained (no outer const refs).
+jest.mock('langfuse', () => ({
+  __esModule: true,
+  default: jest.fn().mockImplementation(() => ({
+    trace: jest.fn().mockReturnValue({ id: 'trace-123', update: jest.fn() }),
+    flushAsync: jest.fn().mockResolvedValue(undefined),
+  })),
+}));
+
+// jest.mock is hoisted before imports — factory must be self-contained.
+jest.mock('openai', () => ({
+  __esModule: true,
+  default: jest.fn().mockImplementation(() => ({
+    embeddings: {
+      create: jest.fn().mockResolvedValue({
+        data: [{ embedding: [0.1, 0.2, 0.3] }, { embedding: [0.4, 0.5, 0.6] }],
+      }),
+    },
+  })),
+}));
+
+import OpenAI from 'openai';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { Document as LangChainDocument } from '@langchain/core/documents';
 import { VectorService } from './vector.service';
 import { PrismaService } from '../prisma/prisma.service';
-
-// Mock OpenAIEmbeddings — we never hit the real API in unit tests.
-jest.mock('@langchain/openai', () => ({
-  OpenAIEmbeddings: jest.fn().mockImplementation(() => ({
-    embedDocuments: jest.fn().mockResolvedValue([
-      [0.1, 0.2, 0.3],
-      [0.4, 0.5, 0.6],
-    ]),
-  })),
-}));
-
-import { OpenAIEmbeddings } from '@langchain/openai';
+import { LangfuseService } from '../observability/langfuse.service';
 
 const DOCUMENT_ID = '22222222-2222-4222-a222-222222222222';
 const SESSION_ID = '11111111-1111-4111-a111-111111111111';
@@ -26,12 +37,19 @@ function makeChunks(count: number): LangChainDocument[] {
   }));
 }
 
+/** Returns the mock embeddings.create function from the most recent OpenAI constructor call. */
+const getMockCreate = (): jest.Mock =>
+  (OpenAI as jest.MockedClass<typeof OpenAI>).mock.results[
+    (OpenAI as jest.MockedClass<typeof OpenAI>).mock.results.length - 1
+  ].value.embeddings.create as jest.Mock;
+
 describe('VectorService', () => {
   let service: VectorService;
   let prisma: jest.Mocked<PrismaService>;
-  let mockEmbedDocuments: jest.Mock;
 
   beforeEach(async () => {
+    jest.clearAllMocks();
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         VectorService,
@@ -48,10 +66,13 @@ describe('VectorService', () => {
               if (key === 'EMBEDDING_MODEL') return 'nvidia/llama-nemotron-embed-vl-1b-v2:free';
               return 'sk-or-test-key';
             }),
-            get: jest.fn().mockImplementation((key: string) => {
-              if (key === 'EMBEDDING_MODEL') return 'nvidia/llama-nemotron-embed-vl-1b-v2:free';
-              return undefined;
-            }),
+          },
+        },
+        {
+          provide: LangfuseService,
+          useValue: {
+            createGeneration: jest.fn().mockReturnValue({}),
+            finalizeGeneration: jest.fn(),
           },
         },
       ],
@@ -59,19 +80,6 @@ describe('VectorService', () => {
 
     service = module.get<VectorService>(VectorService);
     prisma = module.get(PrismaService);
-
-    // Grab the mock instance created by the constructor
-    const mockInstance = (OpenAIEmbeddings as jest.Mock).mock.results[
-      (OpenAIEmbeddings as jest.Mock).mock.results.length - 1
-    ]?.value as { embedDocuments: jest.Mock };
-    mockEmbedDocuments = mockInstance?.embedDocuments;
-
-    if (!mockEmbedDocuments) {
-      mockEmbedDocuments = jest.fn().mockResolvedValue([[0.1, 0.2, 0.3]]);
-      (service as unknown as { embeddings: { embedDocuments: jest.Mock } }).embeddings = {
-        embedDocuments: mockEmbedDocuments,
-      };
-    }
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -80,23 +88,29 @@ describe('VectorService', () => {
     it('returns early without any API or DB calls when chunks array is empty', async () => {
       await service.embedAndStore([], DOCUMENT_ID, SESSION_ID);
 
-      expect(mockEmbedDocuments).not.toHaveBeenCalled();
+      expect(getMockCreate()).not.toHaveBeenCalled();
       expect(prisma.$executeRaw).not.toHaveBeenCalled();
     });
 
-    it('calls embedDocuments exactly once regardless of chunk count (batch, not per-chunk)', async () => {
-      mockEmbedDocuments.mockResolvedValue([
-        [0.1, 0.2], [0.3, 0.4], [0.5, 0.6],
-      ]);
+    it('calls embeddings.create exactly once regardless of chunk count (batch, not per-chunk)', async () => {
+      getMockCreate().mockResolvedValue({
+        data: [{ embedding: [0.1, 0.2] }, { embedding: [0.3, 0.4] }, { embedding: [0.5, 0.6] }],
+      });
 
       await service.embedAndStore(makeChunks(3), DOCUMENT_ID, SESSION_ID);
 
-      expect(mockEmbedDocuments).toHaveBeenCalledTimes(1);
-      expect(mockEmbedDocuments).toHaveBeenCalledWith(['chunk 1 content', 'chunk 2 content', 'chunk 3 content']);
+      expect(getMockCreate()).toHaveBeenCalledTimes(1);
+      expect(getMockCreate()).toHaveBeenCalledWith({
+        model: 'nvidia/llama-nemotron-embed-vl-1b-v2:free',
+        input: ['chunk 1 content', 'chunk 2 content', 'chunk 3 content'],
+        encoding_format: 'float',
+      });
     });
 
     it('calls $executeRaw exactly once regardless of chunk count (single bulk INSERT)', async () => {
-      mockEmbedDocuments.mockResolvedValue([[0.1], [0.2], [0.3], [0.4], [0.5]]);
+      getMockCreate().mockResolvedValue({
+        data: [{ embedding: [0.1] }, { embedding: [0.2] }, { embedding: [0.3] }, { embedding: [0.4] }, { embedding: [0.5] }],
+      });
 
       await service.embedAndStore(makeChunks(5), DOCUMENT_ID, SESSION_ID);
 
@@ -104,7 +118,7 @@ describe('VectorService', () => {
     });
 
     it('formats embedding as pgvector array literal [x,y,...] in the INSERT payload', async () => {
-      mockEmbedDocuments.mockResolvedValue([[0.1, 0.2, 0.3]]);
+      getMockCreate().mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] });
 
       await service.embedAndStore(makeChunks(1), DOCUMENT_ID, SESSION_ID);
 
@@ -117,7 +131,7 @@ describe('VectorService', () => {
     });
 
     it('includes ::halfvec cast in the INSERT for the embedding column', async () => {
-      mockEmbedDocuments.mockResolvedValue([[0.1]]);
+      getMockCreate().mockResolvedValue({ data: [{ embedding: [0.1] }] });
 
       await service.embedAndStore(makeChunks(1), DOCUMENT_ID, SESSION_ID);
 
@@ -128,11 +142,11 @@ describe('VectorService', () => {
     });
 
     it('includes ::jsonb cast in the INSERT for the metadata column', async () => {
-      mockEmbedDocuments.mockResolvedValue([[0.1]]);
+      getMockCreate().mockResolvedValue({ data: [{ embedding: [0.1] }] });
 
       await service.embedAndStore(makeChunks(1), DOCUMENT_ID, SESSION_ID);
 
-      // Prisma.sql`...${}::jsonb, ${}` puts '::jsonb, ' in the strings array.
+      // Prisma.sql`...${}::jsonb` puts '::jsonb' in the strings array.
       const callArgs = (prisma.$executeRaw as jest.Mock).mock.calls[0] as [unknown[], { strings: string[] }];
       const joinedSql = callArgs[1] as { strings: string[] };
       expect(joinedSql.strings.join('')).toContain('::jsonb');
@@ -140,7 +154,7 @@ describe('VectorService', () => {
 
     it('rethrows OpenAI API errors without wrapping', async () => {
       const apiError = new Error('OpenAI rate limit exceeded');
-      mockEmbedDocuments.mockRejectedValue(apiError);
+      getMockCreate().mockRejectedValue(apiError);
 
       await expect(service.embedAndStore(makeChunks(1), DOCUMENT_ID, SESSION_ID)).rejects.toBe(
         apiError,
@@ -148,7 +162,7 @@ describe('VectorService', () => {
     });
 
     it('inserts chunks with correct documentId and sessionId', async () => {
-      mockEmbedDocuments.mockResolvedValue([[0.1, 0.2]]);
+      getMockCreate().mockResolvedValue({ data: [{ embedding: [0.1, 0.2] }] });
 
       await service.embedAndStore(makeChunks(1), DOCUMENT_ID, SESSION_ID);
 

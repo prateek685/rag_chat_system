@@ -1,9 +1,19 @@
+// jest.mock must appear before imports. Factory must be self-contained (no outer const refs).
+jest.mock('langfuse', () => ({
+  __esModule: true,
+  default: jest.fn().mockImplementation(() => ({
+    trace: jest.fn().mockReturnValue({ id: 'trace-123', update: jest.fn() }),
+    flushAsync: jest.fn().mockResolvedValue(undefined),
+  })),
+}));
+
 import * as fs from 'fs';
 import { Test, TestingModule } from '@nestjs/testing';
 import { Job } from 'bullmq';
 import { DocumentProcessor } from './document.processor';
 import { VectorService } from './vector.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { LangfuseService } from '../observability/langfuse.service';
 import { DocumentJobPayload } from './types/document-job.types';
 
 jest.mock('fs', () => ({
@@ -55,6 +65,7 @@ describe('DocumentProcessor', () => {
   let processor: DocumentProcessor;
   let prisma: jest.Mocked<PrismaService>;
   let vectorService: jest.Mocked<VectorService>;
+  let langfuse: jest.Mocked<LangfuseService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -74,12 +85,21 @@ describe('DocumentProcessor', () => {
             embedAndStore: jest.fn().mockResolvedValue(undefined),
           },
         },
+        {
+          provide: LangfuseService,
+          useValue: {
+            createTrace: jest.fn().mockReturnValue({ id: 'trace-doc-1', update: jest.fn() }),
+            finalizeTrace: jest.fn(),
+            recordTraceError: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
     processor = module.get<DocumentProcessor>(DocumentProcessor);
     prisma = module.get(PrismaService);
     vectorService = module.get(VectorService);
+    langfuse = module.get(LangfuseService);
 
     (fs.promises.access as jest.Mock).mockResolvedValue(undefined);
     (fs.promises.readFile as jest.Mock).mockResolvedValue('sample text content');
@@ -143,7 +163,7 @@ describe('DocumentProcessor', () => {
 
       await processor.process(makeJob());
 
-      expect(vectorService.embedAndStore).toHaveBeenCalledWith([], DOCUMENT_ID, SESSION_ID);
+      expect(vectorService.embedAndStore).toHaveBeenCalledWith([], DOCUMENT_ID, SESSION_ID, expect.anything());
     });
 
     it('calls embedAndStore with 1 chunk for single-character content', async () => {
@@ -155,6 +175,7 @@ describe('DocumentProcessor', () => {
         expect.arrayContaining([expect.objectContaining({ pageContent: 'a' })]),
         DOCUMENT_ID,
         SESSION_ID,
+        expect.anything(),
       );
     });
 
@@ -257,6 +278,7 @@ describe('DocumentProcessor', () => {
         expect.arrayContaining([expect.objectContaining({ pageContent: expect.stringContaining('parsed pdf') })]),
         DOCUMENT_ID,
         SESSION_ID,
+        expect.anything(),
       );
     });
   });

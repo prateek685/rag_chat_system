@@ -8,6 +8,7 @@ import { envValidationSchema } from './config/env.config';
 import { PrismaModule } from './modules/prisma/prisma.module';
 import { RedisModule } from './modules/redis/redis.module';
 import { DocumentModule } from './modules/document/document.module';
+import { ChatModule } from './modules/chat/chat.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { DocumentModule } from './modules/document/document.module';
     PrismaModule,
     RedisModule,
     DocumentModule,
+    ChatModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: HttpExceptionFilter },

@@ -4,7 +4,9 @@ import OpenAI from 'openai';
 import { Document as LangChainDocument } from '@langchain/core/documents';
 import { Prisma } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
+import type { LangfuseTraceClient } from 'langfuse';
 import { PrismaService } from '../prisma/prisma.service';
+import { LangfuseService } from '../observability/langfuse.service';
 
 /**
  * Threshold for the embeddings API call latency alarm.
@@ -38,6 +40,7 @@ export class VectorService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly langfuseService: LangfuseService,
   ) {
     this.embeddingModel = this.configService.getOrThrow<string>('EMBEDDING_MODEL');
     // All embedding calls route through OpenRouter's OpenAI-compatible API.
@@ -57,25 +60,34 @@ export class VectorService {
    * @param chunks - LangChain Document objects with pageContent and metadata.
    * @param documentId - Parent document UUID.
    * @param sessionId - Owning session UUID (denormalized for retrieval performance).
+   * @param trace - Optional parent Langfuse trace to nest the embedding generation span under.
    */
   async embedAndStore(
     chunks: LangChainDocument[],
     documentId: string,
     sessionId: string,
+    trace: LangfuseTraceClient | null = null,
   ): Promise<void> {
     if (chunks.length === 0) return;
 
     const texts = chunks.map((c) => c.pageContent);
 
+    const generation = this.langfuseService.createGeneration(trace, {
+      name: 'embedding',
+      model: this.embeddingModel,
+      input: { chunkCount: texts.length },
+    });
+
     const start = Date.now();
     let vectors: number[][];
+    let promptTokens: number | undefined;
+    let totalTokens: number | undefined;
     try {
       const response = await this.openai.embeddings.create({
         model: this.embeddingModel,
         input: texts,
         encoding_format: "float"
       });
-      console.log("This is response", response);
       // Guard against non-standard OpenRouter responses that omit the data field.
       // Some free-tier or vision-language models return unexpected response shapes.
       if (!response.data || response.data.length === 0) {
@@ -90,6 +102,9 @@ export class VectorService {
         );
       }
 
+      promptTokens = response.usage?.prompt_tokens;
+      totalTokens = response.usage?.total_tokens;
+
       vectors = response.data.map((d) => {
         if (!Array.isArray(d.embedding)) {
           throw new InternalServerErrorException(
@@ -100,12 +115,17 @@ export class VectorService {
         return d.embedding as number[];
       });
     } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.langfuseService.finalizeGeneration(generation, {
+        output: { error: errorMessage },
+        metadata: { latencyMs: Date.now() - start, chunkCount: chunks.length, documentId },
+      });
       this.logger.error({
         event: 'embed_failed',
         documentId,
         chunkCount: chunks.length,
         model: this.embeddingModel,
-        error: err instanceof Error ? err.message : String(err),
+        error: errorMessage,
       });
       throw err;
     }
@@ -120,6 +140,12 @@ export class VectorService {
         chunkCount: chunks.length,
       });
     }
+
+    this.langfuseService.finalizeGeneration(generation, {
+      output: { embeddingCount: vectors.length },
+      usage: { promptTokens, totalTokens },
+      metadata: { latencyMs, chunkCount: chunks.length, documentId },
+    });
 
     const rows: ChunkInsertRow[] = chunks.map((chunk, i) => ({
       id: uuidv4(),

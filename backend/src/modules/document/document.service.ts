@@ -1,4 +1,4 @@
-import * as crypto from 'crypto';
+import { createHash } from 'node:crypto';
 import * as fs from 'fs';
 import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -55,7 +55,7 @@ export class DocumentService {
 
     // SHA-256 of the file on disk. At ≤10MB this read is fast (<50ms on typical hardware).
     const fileBuffer = await fs.promises.readFile(file.path);
-    const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    const fileHash = createHash('sha256').update(fileBuffer).digest('hex');
 
     // Dedup check — unique constraint on (sessionId, fileHash) enforces session isolation.
     const existing = await this.prisma.document.findUnique({

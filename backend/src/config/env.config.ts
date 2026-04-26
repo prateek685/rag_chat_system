@@ -30,8 +30,8 @@ export const envValidationSchema = Joi.object({
   // Generation model (M3 — not yet implemented). Switch to 'openai/gpt-4o' for OpenAI.
   GENERATOR_MODEL: Joi.string().default('deepseek/deepseek-r1:free'),
 
-  // Routing/classification model (M3 — not yet implemented). Switch to 'openai/gpt-4o-mini'.
-  ROUTER_MODEL: Joi.string().default('meta-llama/llama-3.1-8b-instruct:free'),
+  // Routing/classification model. Switch to 'openai/gpt-4o-mini' for highest reliability.
+  ROUTER_MODEL: Joi.string().default('google/gemma-3-4b-it:free'),
 
   LANGFUSE_PUBLIC_KEY: Joi.string().required(),
   LANGFUSE_SECRET_KEY: Joi.string().required(),

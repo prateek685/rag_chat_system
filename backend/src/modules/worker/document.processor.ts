@@ -7,6 +7,7 @@ import { Job } from 'bullmq';
 import pdfParse from 'pdf-parse';
 import { PrismaService } from '../prisma/prisma.service';
 import { VectorService } from './vector.service';
+import { LangfuseService } from '../observability/langfuse.service';
 import {
   DOCUMENT_PROCESSING_QUEUE,
   DocumentJobPayload,
@@ -53,6 +54,7 @@ export class DocumentProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly vectorService: VectorService,
+    private readonly langfuseService: LangfuseService,
   ) {
     super();
   }
@@ -68,6 +70,13 @@ export class DocumentProcessor extends WorkerHost {
     const { documentId, sessionId, filePath, originalFilename, mimeType } = payload;
 
     this.logger.log({ event: 'job_started', jobId: job.id, documentId, attempt: job.attemptsMade + 1 });
+
+    const e2eStart = Date.now();
+    const trace = this.langfuseService.createTrace({
+      name: 'document-processing',
+      sessionId,
+      input: JSON.stringify({ documentId, originalFilename, mimeType }),
+    });
 
     try {
       // Phase 1: Mark as PROCESSING so the status endpoint reflects progress immediately.
@@ -97,12 +106,21 @@ export class DocumentProcessor extends WorkerHost {
       );
 
       // Phase 6 + 7: Batch-embed all chunks in one OpenAI call, then bulk-insert.
-      await this.vectorService.embedAndStore(chunks, documentId, sessionId);
+      // Trace is forwarded so the embedding generation span nests under this job's trace.
+      await this.vectorService.embedAndStore(chunks, documentId, sessionId, trace);
 
       // Phase 8: Mark as COMPLETED and persist the token count.
       await this.prisma.document.update({
         where: { id: documentId },
         data: { status: 'COMPLETED', tokenCount },
+      });
+
+      const e2eLatencyMs = Date.now() - e2eStart;
+      this.langfuseService.finalizeTrace(trace, 'completed', {
+        documentId,
+        tokenCount,
+        chunkCount: chunks.length,
+        e2eLatencyMs,
       });
 
       // Phase 9: Remove the temp file. Non-fatal — a warn log is sufficient if it fails.
@@ -113,6 +131,8 @@ export class DocumentProcessor extends WorkerHost {
       this.logger.log({ event: 'job_completed', jobId: job.id, documentId, tokenCount, chunkCount: chunks.length });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
+
+      this.langfuseService.recordTraceError(trace, 'document_processing_failure', errorMessage);
 
       // Update status to FAILED immediately so every retry reflects current state.
       // The catch inside is intentional — a failed status update must not mask the original error.

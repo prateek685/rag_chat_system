@@ -1,4 +1,4 @@
-import * as crypto from 'crypto';
+import { createHash } from 'node:crypto';
 import * as fs from 'fs';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
@@ -296,7 +296,7 @@ describe('DocumentService', () => {
 
       await service.uploadDocument(mockFile, SESSION_ID);
 
-      const expectedHash = crypto.createHash('sha256').update(Buffer.from(content)).digest('hex');
+      const expectedHash = createHash('sha256').update(Buffer.from(content)).digest('hex');
       expect(prisma.document.findUnique).toHaveBeenCalledWith({
         where: { sessionId_fileHash: { sessionId: SESSION_ID, fileHash: expectedHash } },
       });

@@ -4,6 +4,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { DocumentProcessor } from './document.processor';
 import { VectorService } from './vector.service';
 import { DOCUMENT_PROCESSING_QUEUE } from './types/document-job.types';
+import { ObservabilityModule } from '../observability/observability.module';
 
 /**
  * Owns the BullMQ queue definition and all background processing providers.
@@ -11,6 +12,7 @@ import { DOCUMENT_PROCESSING_QUEUE } from './types/document-job.types';
  */
 @Module({
   imports: [
+    ObservabilityModule,
     BullModule.forRootAsync({
       inject: [ConfigService],
       /**
