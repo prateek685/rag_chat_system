@@ -31,7 +31,7 @@ describe('PrismaService', () => {
         {
           provide: ConfigService,
           useValue: {
-            getOrThrow: (key: string) => {
+            get: (key: string) => {
               if (key === 'DATABASE_URL') return 'postgresql://test:test@localhost:5432/test';
               throw new Error(`Unexpected config key: ${key}`);
             },

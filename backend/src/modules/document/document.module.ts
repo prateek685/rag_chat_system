@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { WorkerModule } from '../worker/worker.module';
 import { DocumentController } from './document.controller';
 import { DocumentService } from './document.service';
+import { DocumentUploadInterceptor } from './document-upload.interceptor';
 
 /**
  * Owns the document upload, status polling, and deletion endpoints.
@@ -11,6 +12,6 @@ import { DocumentService } from './document.service';
 @Module({
   imports: [WorkerModule],
   controllers: [DocumentController],
-  providers: [DocumentService],
+  providers: [DocumentService, DocumentUploadInterceptor],
 })
 export class DocumentModule {}

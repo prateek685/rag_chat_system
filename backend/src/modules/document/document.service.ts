@@ -180,9 +180,7 @@ export class DocumentService {
     // Prisma cascade (onDelete: Cascade on DocumentChunk.document) wipes all chunks atomically.
     await this.prisma.document.delete({ where: { id: documentId } });
 
-    // Flush all cache keys scoped to this session.
-    // WARN: redis.keys() is O(N) on the full keyspace — acceptable for dev-scale deployments.
-    // TODO(#future): Replace with SCAN-based iteration for production deployments with large keyspaces.
+    // Flush semantic cache keys for this session — non-fatal, document is already deleted.
     await this.flushSessionCache(sessionId, documentId);
 
     // Insert a ghost system message so the chat pipeline knows to disregard deleted content.
@@ -190,23 +188,19 @@ export class DocumentService {
   }
 
   /**
-   * Flushes all Redis keys scoped to the session using a pipeline delete.
+   * Flushes semantic cache keys for the session using SCAN + batched DEL.
+   * Exact cache entries (chat:cache:{sha256}) cannot be enumerated by session because
+   * the hash combines sessionId + query opaquely — they expire naturally via TTL (24h).
    * Failure is non-fatal — the document is already deleted; cache will expire naturally.
    *
-   * @param sessionId - Session UUID whose cache keys should be purged.
+   * @param sessionId - Session UUID whose semantic cache keys should be purged.
    * @param documentId - Used for logging context only.
    */
   private async flushSessionCache(sessionId: string, documentId: string): Promise<void> {
     try {
-      const keys = await this.redis.client.keys(`session:${sessionId}:*`);
-      if (keys.length > 0) {
-        const pipeline = this.redis.client.pipeline();
-        keys.forEach((k) => pipeline.del(k));
-        await pipeline.exec();
-      }
-      this.logger.log({ event: 'session_cache_flushed', sessionId, keysDeleted: keys.length });
+      const deleted = await this.redis.delPattern(`semantic:${sessionId}:*`);
+      this.logger.log({ event: 'session_cache_flushed', sessionId, documentId, keysDeleted: deleted });
     } catch (err) {
-      // Non-fatal: stale cache entries will expire on their TTL; document is already gone.
       this.logger.warn({
         event: 'session_cache_flush_failed',
         sessionId,

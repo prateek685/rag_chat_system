@@ -62,7 +62,7 @@ describe('VectorService', () => {
         {
           provide: ConfigService,
           useValue: {
-            getOrThrow: jest.fn().mockImplementation((key: string) => {
+            get: jest.fn().mockImplementation((key: string) => {
               if (key === 'EMBEDDING_MODEL') return 'nvidia/llama-nemotron-embed-vl-1b-v2:free';
               return 'sk-or-test-key';
             }),

@@ -65,7 +65,6 @@ describe('DocumentProcessor', () => {
   let processor: DocumentProcessor;
   let prisma: jest.Mocked<PrismaService>;
   let vectorService: jest.Mocked<VectorService>;
-  let langfuse: jest.Mocked<LangfuseService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -75,7 +74,7 @@ describe('DocumentProcessor', () => {
           provide: PrismaService,
           useValue: {
             document: {
-              update: jest.fn().mockResolvedValue({}),
+              update: jest.fn().mockResolvedValue({ sessionId: SESSION_ID }),
             },
           },
         },
@@ -99,7 +98,6 @@ describe('DocumentProcessor', () => {
     processor = module.get<DocumentProcessor>(DocumentProcessor);
     prisma = module.get(PrismaService);
     vectorService = module.get(VectorService);
-    langfuse = module.get(LangfuseService);
 
     (fs.promises.access as jest.Mock).mockResolvedValue(undefined);
     (fs.promises.readFile as jest.Mock).mockResolvedValue('sample text content');
@@ -120,9 +118,10 @@ describe('DocumentProcessor', () => {
   describe('process — phase sequencing', () => {
     it('sets status to PROCESSING as the first DB operation', async () => {
       const updateCalls: string[] = [];
-      (prisma.document.update as jest.Mock).mockImplementation(({ data }) => {
-        updateCalls.push(data.status as string);
-        return Promise.resolve({});
+      (prisma.document.update as jest.Mock).mockImplementation(({ data }: { data: { status: string } }) => {
+        updateCalls.push(data.status);
+        // The PROCESSING update must return sessionId for the invariant check.
+        return Promise.resolve(data.status === 'PROCESSING' ? { sessionId: SESSION_ID } : {});
       });
 
       await processor.process(makeJob());
@@ -251,6 +250,18 @@ describe('DocumentProcessor', () => {
       vectorService.embedAndStore.mockRejectedValue(originalError);
 
       await expect(processor.process(makeJob())).rejects.toBe(originalError);
+    });
+
+    it('throws and sets FAILED status when document sessionId does not match job payload sessionId', async () => {
+      (prisma.document.update as jest.Mock).mockResolvedValueOnce({ sessionId: 'different-session-id' });
+
+      await expect(processor.process(makeJob())).rejects.toThrow(/Session ID mismatch/);
+
+      const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
+        ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
+      );
+      expect(failedCall).toBeDefined();
+      expect(failedCall[0].data.errorMessage).toMatch(/mismatch/i);
     });
 
     it('handles Zod parse error on invalid job payload', async () => {

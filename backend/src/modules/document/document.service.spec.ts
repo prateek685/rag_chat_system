@@ -43,18 +43,12 @@ const mockDocument = {
 describe('DocumentService', () => {
   let service: DocumentService;
   let prisma: jest.Mocked<PrismaService>;
-  let redis: { client: jest.Mocked<{ keys: jest.Mock; pipeline: jest.Mock; del: jest.Mock; exec: jest.Mock }> };
+  let redis: { delPattern: jest.Mock };
   let queue: { add: jest.Mock };
 
   beforeEach(async () => {
-    const mockPipeline = { del: jest.fn().mockReturnThis(), exec: jest.fn().mockResolvedValue([]) };
     redis = {
-      client: {
-        keys: jest.fn().mockResolvedValue([]),
-        pipeline: jest.fn().mockReturnValue(mockPipeline),
-        del: jest.fn(),
-        exec: jest.fn(),
-      },
+      delPattern: jest.fn().mockResolvedValue(0),
     };
     queue = { add: jest.fn().mockResolvedValue({ id: JOB_ID }) };
 
@@ -245,16 +239,12 @@ describe('DocumentService', () => {
       expect(prisma.document.delete).toHaveBeenCalledWith({ where: { id: DOCUMENT_ID } });
     });
 
-    it('flushes Redis keys matching session:{sessionId}:*', async () => {
-      redis.client.keys.mockResolvedValue(['session:abc:chat:key1', 'session:abc:embed:key2']);
-      const pipeline = { del: jest.fn().mockReturnThis(), exec: jest.fn().mockResolvedValue([]) };
-      redis.client.pipeline.mockReturnValue(pipeline as never);
+    it('flushes semantic cache keys for the session via delPattern', async () => {
+      redis.delPattern.mockResolvedValue(3);
 
       await service.deleteDocument(DOCUMENT_ID, SESSION_ID);
 
-      expect(redis.client.keys).toHaveBeenCalledWith(`session:${SESSION_ID}:*`);
-      expect(pipeline.del).toHaveBeenCalledTimes(2);
-      expect(pipeline.exec).toHaveBeenCalled();
+      expect(redis.delPattern).toHaveBeenCalledWith(`semantic:${SESSION_ID}:*`);
     });
 
     it('inserts system ghost message with correct content', async () => {
@@ -270,7 +260,7 @@ describe('DocumentService', () => {
     });
 
     it('does not rethrow when Redis flush fails (non-fatal — logs warn)', async () => {
-      redis.client.keys.mockRejectedValue(new Error('Redis connection lost'));
+      redis.delPattern.mockRejectedValue(new Error('Redis connection lost'));
 
       await expect(service.deleteDocument(DOCUMENT_ID, SESSION_ID)).resolves.toBeUndefined();
     });

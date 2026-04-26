@@ -8,7 +8,10 @@ import { RedisService } from '../redis/redis.service';
 import { ChatMessageDto } from './dto/chat-message.dto';
 import { FeedbackDto } from './dto/feedback.dto';
 import { RagGraphService } from './graph/rag-graph.service';
+import { RetrievalNodeService } from './nodes/retrieval.node';
+import { SummarizeMemoryNodeService } from './nodes/summarize-memory.node';
 import { NO_CONTEXT_RESPONSE, VIOLATION_RESPONSE } from './prompts/system-prompt';
+import { SemanticCacheService } from './semantic-cache.service';
 import { Citation, RetrievedChunk, SlidingWindowMessage } from './types/rag-state.types';
 
 /** Redis key for per-session rate limiting. */
@@ -43,14 +46,18 @@ export class ChatService {
     private readonly redis: RedisService,
     private readonly langfuseService: LangfuseService,
     private readonly ragGraph: RagGraphService,
+    private readonly retrievalNode: RetrievalNodeService,
+    private readonly semanticCache: SemanticCacheService,
+    private readonly summarizeMemoryNode: SummarizeMemoryNodeService,
   ) {}
 
   /**
    * Orchestrates the full RAG chat pipeline and streams the response via SSE.
    *
-   * Order: rate limit → DB save → SSE headers → cache check → embed →
-   *        load context → Langfuse trace → graph execute → stream canned
-   *        response if needed → [DONE] → async post-processing.
+   * Order: rate limit → DB save → SSE headers → exact cache check →
+   *        Langfuse trace → [embed + load context in parallel] →
+   *        semantic cache check → graph execute → stream canned response if needed →
+   *        [DONE] → async post-processing (save + exact cache + semantic cache + summarize).
    *
    * @param dto - Validated chat message DTO.
    * @param sessionId - Owning session UUID (from SessionGuard).
@@ -92,9 +99,9 @@ export class ChatService {
     const cacheKey = chatCacheKey(cacheHash);
 
     if (!skipCache) {
-      const cached = await this.redis.client.get(cacheKey);
+      const cached = await this.redis.get(cacheKey);
       if (cached) {
-        this.logger.log({ event: 'cache_hit', sessionId });
+        this.logger.log({ event: 'exact_cache_hit', sessionId });
         res.write(`data: ${JSON.stringify({ token: cached })}\n\n`);
         res.write('data: [DONE]\n\n');
         res.end();
@@ -102,10 +109,7 @@ export class ChatService {
       }
     }
 
-    // 5. Load sliding-window history and running summary in parallel.
-    const { slidingWindow, runningSummary } = await this.loadSessionContext(sessionId);
-
-    // 7. Create Langfuse trace (non-throwing; returns null on SDK error).
+    // 5. Create Langfuse trace before embedding so the embedding span nests under it.
     const trace = this.langfuseService.createTrace({
       name: 'chat',
       sessionId,
@@ -113,6 +117,48 @@ export class ChatService {
       tags: isRetry ? ['retry'] : [],
     });
     const traceId = trace?.id ?? randomUUID();
+
+    // 6. Embed query + load context in parallel.
+    //    Pre-computing the embedding here enables the semantic cache check and
+    //    eliminates the duplicate embedding call inside RetrievalNode.
+    let queryEmbedding: number[] = [];
+    let slidingWindow: SlidingWindowMessage[] = [];
+    let runningSummary: string | null = null;
+
+    try {
+      const [embedding, context] = await Promise.all([
+        this.retrievalNode.embedQuery(dto.message, sessionId, trace),
+        this.loadSessionContext(sessionId),
+      ]);
+      queryEmbedding = embedding;
+      slidingWindow = context.slidingWindow;
+      runningSummary = context.runningSummary;
+    } catch (err) {
+      // Embedding failure is fatal — we cannot serve a RAG response without it.
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.logger.error({ event: 'pre_embed_failed', sessionId, error: errorMessage });
+      this.langfuseService.recordTraceError(trace, 'embed_failure', errorMessage);
+      res.write(`data: ${JSON.stringify({ error: 'Something went wrong. Please try again.' })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
+    // 7. Semantic cache check — only when not a retry/skipCache.
+    if (!skipCache && queryEmbedding.length > 0) {
+      const semanticHit = await this.semanticCache.lookup(sessionId, queryEmbedding);
+      if (semanticHit) {
+        this.logger.log({ event: 'semantic_cache_hit', sessionId });
+        res.write(`data: ${JSON.stringify({ token: semanticHit })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+        // Promote to exact cache so identical future queries are faster.
+        setImmediate(() => {
+          void this.redis.setex(cacheKey, CACHE_TTL_SECONDS, semanticHit);
+        });
+        return;
+      }
+    }
 
     // 8. Build the SSE write callback — captures res via closure.
     const writeToken = (token: string): void => {
@@ -129,7 +175,8 @@ export class ChatService {
         {
           sessionId,
           userQuery: dto.message,
-          queryEmbedding: [], // populated by RetrievalNodeService — only RAG_QUERY paths embed
+          // Pre-computed embedding — RetrievalNode skips re-embedding when non-empty.
+          queryEmbedding,
           route: null,
           chunks: [],
           slidingWindow,
@@ -153,7 +200,6 @@ export class ChatService {
         sessionId,
         error: errorMessage,
       });
-      // Record the failure type in Langfuse for error-rate analysis before ending the stream.
       this.langfuseService.recordTraceError(trace, 'llm_pipeline_failure', errorMessage);
       res.write(`data: ${JSON.stringify({ error: 'Something went wrong. Please try again.' })}\n\n`);
       res.write('data: [DONE]\n\n');
@@ -190,15 +236,27 @@ export class ChatService {
       });
     }
 
-    // 12. Non-blocking post-processing: save assistant message + cache + Langfuse.
+    // 12. Non-blocking post-processing: save assistant message + caches + Langfuse + summarize.
     setImmediate(() => {
-      void this.postProcess({ sessionId, fullResponse, citations, cacheKey, skipCache, finalRoute, traceId, trace, e2eLatencyMs });
+      void this.postProcess({
+        sessionId,
+        fullResponse,
+        citations,
+        cacheKey,
+        queryEmbedding,
+        skipCache,
+        finalRoute,
+        traceId,
+        trace,
+        e2eLatencyMs,
+        runningSummary,
+      });
     });
   }
 
   /**
-   * Handles retry: deletes the last assistant + user messages, then re-runs the pipeline
-   * with skipCache=true and reduced temperature for variety.
+   * Handles retry: clears stale cache entries, deletes the last assistant + user messages,
+   * then re-runs the pipeline with skipCache=true and reduced temperature for variety.
    *
    * @param sessionId - Owning session UUID.
    * @param res - Express response for SSE streaming.
@@ -224,6 +282,16 @@ export class ChatService {
       return;
     }
 
+    // Invalidate stale cache so the wrong response is not served again.
+    // Exact cache: delete the specific key for this query.
+    const staleHash = createHash('sha256')
+      .update(`${sessionId}:${lastUser.content}`)
+      .digest('hex');
+    await this.redis.del(chatCacheKey(staleHash));
+
+    // Semantic cache: wipe entire session — retry signals the user found something wrong.
+    await this.semanticCache.invalidateSession(sessionId);
+
     // Delete the user message — handleChat will persist it fresh.
     await this.prisma.message.delete({ where: { id: lastUser.id } });
 
@@ -238,12 +306,19 @@ export class ChatService {
 
   /**
    * Forwards a user feedback score to Langfuse.
-   * Errors are swallowed in LangfuseService — this method always returns normally.
+   * On negative feedback (score = -1), invalidates the cached response so
+   * the wrong answer is not served again to the same session.
    *
    * @param dto - Feedback payload with traceId and score (1 | -1).
    */
   async handleFeedback(dto: FeedbackDto): Promise<void> {
+    // Record score in Langfuse regardless of cache outcome.
     await this.langfuseService.score(dto.traceId, dto.score);
+
+    // Invalidate caches on thumbs-down to prevent the wrong answer from being served again.
+    if (dto.score === -1) {
+      await this.invalidateCacheForTrace(dto.traceId);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -259,9 +334,9 @@ export class ChatService {
    */
   private async checkRateLimit(sessionId: string): Promise<void> {
     const key = rateLimitKey(sessionId);
-    const count = await this.redis.client.incr(key);
+    const count = await this.redis.incr(key);
     if (count === 1) {
-      await this.redis.client.expire(key, RATE_LIMIT_TTL_SECONDS);
+      await this.redis.expire(key, RATE_LIMIT_TTL_SECONDS);
     }
     if (count > RATE_LIMIT_MAX) {
       throw new HttpException(
@@ -271,7 +346,6 @@ export class ChatService {
     }
   }
 
-  /**
   /**
    * Fetches the last SLIDING_WINDOW_SIZE messages (in chronological order)
    * and the session's running summary in parallel.
@@ -309,20 +383,35 @@ export class ChatService {
 
   /**
    * Async post-processing executed after res.end() via setImmediate.
-   * Each step has its own try/catch — an error in caching must not prevent DB save.
+   * Each step has its own try/catch — an error in one step must not prevent the others.
+   * Order: save message → exact cache → semantic cache → Langfuse finalize → summarize.
    */
   private async postProcess(params: {
     sessionId: string;
     fullResponse: string;
     citations: Citation[];
     cacheKey: string;
+    queryEmbedding: number[];
     skipCache: boolean;
     finalRoute: string | null;
     traceId: string;
     trace: LangfuseTraceClient | null;
     e2eLatencyMs: number;
+    runningSummary: string | null;
   }): Promise<void> {
-    const { sessionId, fullResponse, citations, cacheKey, skipCache, finalRoute, traceId, trace, e2eLatencyMs } = params;
+    const {
+      sessionId,
+      fullResponse,
+      citations,
+      cacheKey,
+      queryEmbedding,
+      skipCache,
+      finalRoute,
+      traceId,
+      trace,
+      e2eLatencyMs,
+      runningSummary,
+    } = params;
 
     // Save assistant message with traceId and structured citations for later feedback/display.
     try {
@@ -332,7 +421,6 @@ export class ChatService {
           role: 'assistant',
           content: fullResponse,
           traceId,
-          // Prisma Json type requires an explicit cast from a typed array.
           citations: citations.length > 0 ? (citations as object[]) : undefined,
         },
       });
@@ -344,25 +432,80 @@ export class ChatService {
       });
     }
 
-    // Write exact-match cache only for real LLM responses — never cache canned guardrail replies
-    // (NO_CONTEXT, VIOLATION) because those are session-state-dependent and would wrongly
-    // persist after the user uploads new documents or changes context.
+    // Write exact-match and semantic caches only for real LLM responses.
+    // Never cache canned guardrail replies (NO_CONTEXT, VIOLATION) — those are
+    // session-state-dependent and would wrongly persist after documents change.
     const isCannedRoute = finalRoute === 'NO_CONTEXT' || finalRoute === 'VIOLATION';
+
     if (!skipCache && fullResponse && !isCannedRoute) {
-      try {
-        await this.redis.client.setex(cacheKey, CACHE_TTL_SECONDS, fullResponse);
-        this.logger.log({ event: 'cache_written', sessionId });
-      } catch (err) {
-        this.logger.warn({
-          event: 'cache_write_failed',
-          sessionId,
-          error: err instanceof Error ? err.message : String(err),
-        });
+      // Exact cache — serves future identical queries instantly.
+      await this.redis.setex(cacheKey, CACHE_TTL_SECONDS, fullResponse);
+      this.logger.log({ event: 'exact_cache_written', sessionId });
+
+      // Semantic cache — serves semantically similar future queries.
+      if (queryEmbedding.length > 0) {
+        try {
+          await this.semanticCache.store(sessionId, queryEmbedding, fullResponse);
+        } catch (err) {
+          this.logger.warn({
+            event: 'semantic_cache_write_failed',
+            sessionId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
     }
 
     // Finalize Langfuse trace with E2E latency and route for pipeline-level analysis.
     this.langfuseService.finalizeTrace(trace, fullResponse, { e2eLatencyMs, route: finalRoute });
+
+    // Summarize old messages if session is long — runs last so it doesn't delay other steps.
+    // Any error here is caught inside execute() and never propagates.
+    await this.summarizeMemoryNode.execute(sessionId, runningSummary);
+  }
+
+  /**
+   * Looks up the question that produced a given traceId and clears its cache entries.
+   * Called on thumbs-down feedback to prevent stale wrong answers from being served.
+   * Non-throwing — Langfuse score was already recorded before this is called.
+   */
+  private async invalidateCacheForTrace(traceId: string): Promise<void> {
+    try {
+      const assistantMsg = await this.prisma.message.findFirst({
+        where: { traceId },
+        select: { sessionId: true, createdAt: true },
+      });
+      if (!assistantMsg) return;
+
+      const { sessionId, createdAt } = assistantMsg;
+
+      // Find the user message that immediately preceded this assistant response.
+      const userMsg = await this.prisma.message.findFirst({
+        where: { sessionId, role: 'user', createdAt: { lt: createdAt } },
+        orderBy: { createdAt: 'desc' },
+        select: { content: true },
+      });
+      if (!userMsg) return;
+
+      // Delete the exact cache entry for the wrong answer.
+      const staleHash = createHash('sha256')
+        .update(`${sessionId}:${userMsg.content}`)
+        .digest('hex');
+      await this.redis.del(chatCacheKey(staleHash));
+
+      // Wipe all semantic cache for the session — the wrong answer may also
+      // be served to semantically similar future queries.
+      await this.semanticCache.invalidateSession(sessionId);
+
+      this.logger.log({ event: 'cache_invalidated_on_negative_feedback', sessionId, traceId });
+    } catch (err) {
+      // Non-fatal — Langfuse score was already recorded; cache expires via TTL.
+      this.logger.warn({
+        event: 'cache_invalidation_failed',
+        traceId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**

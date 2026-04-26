@@ -1,7 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EnvConfig } from '../../../config/env.config';
 import { LangfuseTraceClient } from 'langfuse';
 import OpenAI from 'openai';
+import { withLlmRetry } from '../../../common/utils/llm-retry.util';
 import { LangfuseService } from '../../observability/langfuse.service';
 import { ChatRoute, RAGState } from '../types/rag-state.types';
 
@@ -35,12 +37,12 @@ export class RouterNodeService {
   private readonly routerModel: string;
 
   constructor(
-    configService: ConfigService,
+    configService: ConfigService<EnvConfig, true>,
     private readonly langfuseService: LangfuseService,
   ) {
-    this.routerModel = configService.getOrThrow<string>('ROUTER_MODEL');
+    this.routerModel = configService.get('ROUTER_MODEL', { infer: true });
     this.openai = new OpenAI({
-      apiKey: configService.getOrThrow<string>('OPENROUTER_API_KEY'),
+      apiKey: configService.get('OPENROUTER_API_KEY', { infer: true }),
       baseURL: 'https://openrouter.ai/api/v1',
     });
   }
@@ -91,17 +93,22 @@ export class RouterNodeService {
     let totalTokens: number | undefined;
 
     try {
-      const response = await this.openai.chat.completions.create({
-        model: this.routerModel,
-        messages: [
-          {
-            role: 'user',
-            content: `${ROUTER_SYSTEM_PROMPT}\n\nUser Query:\n${state.userQuery}`,
-          },
-        ],
-        temperature: 0,
-        max_tokens: 30,
-      });
+      const response = await withLlmRetry(
+        () =>
+          this.openai.chat.completions.create({
+            model: this.routerModel,
+            messages: [
+              {
+                role: 'user',
+                content: `${ROUTER_SYSTEM_PROMPT}\n\nUser Query:\n${state.userQuery}`,
+              },
+            ],
+            temperature: 0,
+            max_tokens: 30,
+          }),
+        this.logger,
+        { operation: 'router', sessionId: state.sessionId },
+      );
 
       promptTokens = response.usage?.prompt_tokens;
       completionTokens = response.usage?.completion_tokens;

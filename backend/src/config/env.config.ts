@@ -37,8 +37,10 @@ export const envValidationSchema = Joi.object({
   LANGFUSE_SECRET_KEY: Joi.string().required(),
   LANGFUSE_HOST: Joi.string().uri().required(),
 
-  NEXT_PUBLIC_API_URL: Joi.string().uri().optional(),
   FRONTEND_URL: Joi.string().uri().default('http://localhost:3001'),
+  // Absolute path for uploaded files. Defaults to <cwd>/uploads if omitted.
+  // In Docker this is set to /app/uploads (the named volume mount path).
+  UPLOADS_PATH: Joi.string().optional(),
   PGADMIN_DEFAULT_EMAIL: Joi.string().email().optional(),
   PGADMIN_DEFAULT_PASSWORD: Joi.string().optional(),
 });
@@ -58,4 +60,5 @@ export interface EnvConfig {
   LANGFUSE_SECRET_KEY: string;
   LANGFUSE_HOST: string;
   FRONTEND_URL: string;
+  UPLOADS_PATH?: string;
 }

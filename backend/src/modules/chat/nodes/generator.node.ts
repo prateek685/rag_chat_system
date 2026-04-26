@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EnvConfig } from '../../../config/env.config';
 import { LangfuseTraceClient } from 'langfuse';
 import OpenAI from 'openai';
 import { AIMessage, HumanMessage } from '@langchain/core/messages';
+import { withLlmRetry } from '../../../common/utils/llm-retry.util';
 import { LangfuseService } from '../../observability/langfuse.service';
 import { PromptBuilderService } from '../prompt-builder.service';
 import { RAGState, WriteTokenFn } from '../types/rag-state.types';
@@ -24,13 +26,13 @@ export class GeneratorNodeService {
   private readonly generatorModel: string;
 
   constructor(
-    configService: ConfigService,
+    configService: ConfigService<EnvConfig, true>,
     private readonly promptBuilder: PromptBuilderService,
     private readonly langfuseService: LangfuseService,
   ) {
-    this.generatorModel = configService.getOrThrow<string>('GENERATOR_MODEL');
+    this.generatorModel = configService.get('GENERATOR_MODEL', { infer: true });
     this.openai = new OpenAI({
-      apiKey: configService.getOrThrow<string>('OPENROUTER_API_KEY'),
+      apiKey: configService.get('OPENROUTER_API_KEY', { infer: true }),
       baseURL: 'https://openrouter.ai/api/v1',
     });
   }
@@ -78,14 +80,21 @@ export class GeneratorNodeService {
     let totalTokens: number | undefined;
 
     try {
-      const stream = await this.openai.chat.completions.create({
-        model: this.generatorModel,
-        messages: openaiMessages,
-        temperature: state.temperature,
-        stream: true,
-        // Request usage data on the final stream chunk for token cost tracking.
-        stream_options: { include_usage: true },
-      });
+      // Retry wraps only the initial connection — once the stream is open we iterate
+      // without retry (partial tokens already written to SSE response).
+      const stream = await withLlmRetry(
+        () =>
+          this.openai.chat.completions.create({
+            model: this.generatorModel,
+            messages: openaiMessages,
+            temperature: state.temperature,
+            stream: true,
+            // Request usage data on the final stream chunk for token cost tracking.
+            stream_options: { include_usage: true },
+          }),
+        this.logger,
+        { operation: 'generator', sessionId: state.sessionId },
+      );
 
       for await (const chunk of stream) {
         const token = chunk.choices[0]?.delta?.content ?? '';

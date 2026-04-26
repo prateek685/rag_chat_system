@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EnvConfig } from '../../config/env.config';
 import Langfuse, { LangfuseGenerationClient, LangfuseSpanClient, LangfuseTraceClient } from 'langfuse';
 
 /** Token usage shape from OpenAI responses (both streaming and non-streaming). */
@@ -36,11 +37,11 @@ export class LangfuseService implements OnModuleDestroy {
   private readonly logger = new Logger(LangfuseService.name);
   private readonly client: Langfuse;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(private readonly configService: ConfigService<EnvConfig, true>) {
     this.client = new Langfuse({
-      publicKey: configService.getOrThrow<string>('LANGFUSE_PUBLIC_KEY'),
-      secretKey: configService.getOrThrow<string>('LANGFUSE_SECRET_KEY'),
-      baseUrl: configService.getOrThrow<string>('LANGFUSE_HOST'),
+      publicKey: configService.get('LANGFUSE_PUBLIC_KEY', { infer: true }),
+      secretKey: configService.get('LANGFUSE_SECRET_KEY', { infer: true }),
+      baseUrl: configService.get('LANGFUSE_HOST', { infer: true }),
     });
   }
 

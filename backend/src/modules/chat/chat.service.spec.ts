@@ -30,7 +30,10 @@ import { RedisService } from '../redis/redis.service';
 import { ChatService } from './chat.service';
 import { FeedbackDto } from './dto/feedback.dto';
 import { RagGraphService } from './graph/rag-graph.service';
+import { RetrievalNodeService } from './nodes/retrieval.node';
+import { SummarizeMemoryNodeService } from './nodes/summarize-memory.node';
 import { PromptBuilderService } from './prompt-builder.service';
+import { SemanticCacheService } from './semantic-cache.service';
 import { NO_CONTEXT_RESPONSE, VIOLATION_RESPONSE } from './prompts/system-prompt';
 import { RAGState, RetrievedChunk, SlidingWindowMessage } from './types/rag-state.types';
 
@@ -47,9 +50,12 @@ const makeMockRes = (): jest.Mocked<Response> =>
 describe('ChatService', () => {
   let service: ChatService;
   let prisma: jest.Mocked<PrismaService>;
-  let redis: { client: Record<string, jest.Mock> };
+  let redis: Record<string, jest.Mock>;
   let ragGraph: jest.Mocked<RagGraphService>;
   let langfuse: jest.Mocked<LangfuseService>;
+  let retrievalNode: { embedQuery: jest.Mock };
+  let semanticCache: jest.Mocked<SemanticCacheService>;
+  let summarizeMemoryNode: { execute: jest.Mock };
 
   const mockChunk: RetrievedChunk = {
     id: 'chunk-1',
@@ -91,12 +97,14 @@ describe('ChatService', () => {
     } as unknown as jest.Mocked<PrismaService>;
 
     redis = {
-      client: {
-        get: jest.fn().mockResolvedValue(null),
-        setex: jest.fn().mockResolvedValue('OK'),
-        incr: jest.fn().mockResolvedValue(1),
-        expire: jest.fn().mockResolvedValue(1),
-      },
+      get: jest.fn().mockResolvedValue(null),
+      set: jest.fn().mockResolvedValue(undefined),
+      setex: jest.fn().mockResolvedValue(undefined),
+      del: jest.fn().mockResolvedValue(undefined),
+      incr: jest.fn().mockResolvedValue(1),
+      expire: jest.fn().mockResolvedValue(undefined),
+      scan: jest.fn().mockResolvedValue([]),
+      delPattern: jest.fn().mockResolvedValue(0),
     };
 
     ragGraph = {
@@ -114,6 +122,20 @@ describe('ChatService', () => {
       score: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<LangfuseService>;
 
+    retrievalNode = {
+      embedQuery: jest.fn().mockResolvedValue([]),
+    };
+
+    semanticCache = {
+      lookup: jest.fn().mockResolvedValue(null),
+      store: jest.fn().mockResolvedValue(undefined),
+      invalidateSession: jest.fn().mockResolvedValue(undefined),
+    } as unknown as jest.Mocked<SemanticCacheService>;
+
+    summarizeMemoryNode = {
+      execute: jest.fn().mockResolvedValue(undefined),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ChatService,
@@ -122,10 +144,13 @@ describe('ChatService', () => {
         { provide: RedisService, useValue: redis },
         { provide: RagGraphService, useValue: ragGraph },
         { provide: LangfuseService, useValue: langfuse },
+        { provide: RetrievalNodeService, useValue: retrievalNode },
+        { provide: SemanticCacheService, useValue: semanticCache },
+        { provide: SummarizeMemoryNodeService, useValue: summarizeMemoryNode },
         {
           provide: ConfigService,
           useValue: {
-            getOrThrow: (key: string) => {
+            get: (key: string) => {
               const map: Record<string, string> = {
                 GENERATOR_MODEL: 'test-gen',
                 ROUTER_MODEL: 'test-router',
@@ -294,7 +319,7 @@ describe('ChatService', () => {
   // ---------------------------------------------------------------------------
   describe('checkRateLimit', () => {
     it('throws 429 HttpException when message count exceeds 10', async () => {
-      redis.client.incr.mockResolvedValueOnce(11);
+      redis.incr.mockResolvedValueOnce(11);
 
       const res = makeMockRes();
       await expect(service.handleChat({ message: 'test' }, 'session-1', res)).rejects.toThrow(
@@ -304,13 +329,168 @@ describe('ChatService', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Feedback
+  // Semantic cache hit
+  // ---------------------------------------------------------------------------
+  describe('handleChat — semantic cache hit', () => {
+    it('streams cached response and promotes to exact cache without running the graph', async () => {
+      const cachedResponse = 'Cached semantic answer';
+      retrievalNode.embedQuery.mockResolvedValueOnce([0.1, 0.2, 0.3]);
+      semanticCache.lookup.mockResolvedValueOnce(cachedResponse);
+
+      const res = makeMockRes();
+      await service.handleChat({ message: 'What is Paris?' }, 'session-1', res);
+
+      // Flush setImmediate (exact cache promotion)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      const written = (res.write as jest.Mock).mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .join('');
+      expect(written).toContain(cachedResponse);
+      expect(written).toContain('[DONE]');
+      expect(ragGraph.execute).not.toHaveBeenCalled();
+      // Exact cache promoted from semantic hit
+      expect(redis.setex).toHaveBeenCalledWith(
+        expect.stringContaining('chat:cache:'),
+        expect.any(Number),
+        cachedResponse,
+      );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // postProcess — semantic cache write
+  // ---------------------------------------------------------------------------
+  describe('handleChat — postProcess semantic cache', () => {
+    it('stores response in semantic cache for RAG_QUERY route when embedding is non-empty', async () => {
+      retrievalNode.embedQuery.mockResolvedValueOnce([0.1, 0.2, 0.3]);
+
+      const res = makeMockRes();
+      await service.handleChat({ message: 'test' }, 'session-1', res);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(semanticCache.store).toHaveBeenCalledWith(
+        'session-1',
+        [0.1, 0.2, 0.3],
+        expect.any(String),
+      );
+    });
+
+    it('does NOT store response in semantic cache for VIOLATION route', async () => {
+      retrievalNode.embedQuery.mockResolvedValueOnce([0.1, 0.2, 0.3]);
+      ragGraph.execute.mockResolvedValueOnce({
+        ...makeDefaultFinalState(),
+        route: 'VIOLATION',
+        fullResponse: '',
+      } as RAGState);
+
+      const res = makeMockRes();
+      await service.handleChat({ message: 'bad request' }, 'session-1', res);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(semanticCache.store).not.toHaveBeenCalled();
+    });
+
+    it('does NOT store response in semantic cache for NO_CONTEXT route', async () => {
+      retrievalNode.embedQuery.mockResolvedValueOnce([0.1, 0.2, 0.3]);
+      ragGraph.execute.mockResolvedValueOnce({
+        ...makeDefaultFinalState(),
+        route: 'NO_CONTEXT',
+        fullResponse: '',
+      } as RAGState);
+
+      const res = makeMockRes();
+      await service.handleChat({ message: 'dark matter?' }, 'session-1', res);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(semanticCache.store).not.toHaveBeenCalled();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // postProcess — summarize memory
+  // ---------------------------------------------------------------------------
+  describe('handleChat — postProcess summarize', () => {
+    it('calls summarizeMemoryNode.execute with sessionId and runningSummary from context', async () => {
+      const existingSummary = 'Prior conversation summary.';
+      (prisma.session.findUnique as jest.Mock).mockResolvedValueOnce({
+        runningSummary: existingSummary,
+      });
+
+      const res = makeMockRes();
+      await service.handleChat({ message: 'test' }, 'session-1', res);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(summarizeMemoryNode.execute).toHaveBeenCalledWith('session-1', existingSummary);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // handleRetry — cache invalidation
+  // ---------------------------------------------------------------------------
+  describe('handleRetry — cache invalidation', () => {
+    it('deletes exact cache key and wipes semantic cache before re-running', async () => {
+      const lastAssistant = { id: 'asst-1', content: 'Paris is the capital.' };
+      const lastUser = { id: 'user-1', content: 'What is Paris?' };
+      (prisma.message.findFirst as jest.Mock)
+        .mockResolvedValueOnce(lastAssistant)
+        .mockResolvedValueOnce(lastUser);
+
+      const res = makeMockRes();
+      await service.handleRetry('session-1', res);
+
+      expect(redis.del).toHaveBeenCalledWith(expect.stringContaining('chat:cache:'));
+      expect(semanticCache.invalidateSession).toHaveBeenCalledWith('session-1');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // handleFeedback — cache invalidation on negative score
   // ---------------------------------------------------------------------------
   describe('handleFeedback', () => {
     it('forwards score and traceId to LangfuseService.score()', async () => {
       const dto: FeedbackDto = { traceId: 'trace-abc', score: 1 };
       await service.handleFeedback(dto);
       expect(langfuse.score).toHaveBeenCalledWith('trace-abc', 1);
+    });
+
+    it('invalidates exact and semantic cache on score = -1', async () => {
+      const assistantMsg = { sessionId: 'session-1', createdAt: new Date('2024-01-02') };
+      const userMsg = { content: 'What is Paris?' };
+      (prisma.message.findFirst as jest.Mock)
+        .mockResolvedValueOnce(assistantMsg)
+        .mockResolvedValueOnce(userMsg);
+
+      const dto: FeedbackDto = { traceId: 'trace-abc', score: -1 };
+      await service.handleFeedback(dto);
+
+      expect(langfuse.score).toHaveBeenCalledWith('trace-abc', -1);
+      expect(redis.del).toHaveBeenCalledWith(expect.stringContaining('chat:cache:'));
+      expect(semanticCache.invalidateSession).toHaveBeenCalledWith('session-1');
+    });
+
+    it('does NOT invalidate cache on score = +1', async () => {
+      const dto: FeedbackDto = { traceId: 'trace-abc', score: 1 };
+      await service.handleFeedback(dto);
+
+      expect(redis.del).not.toHaveBeenCalled();
+      expect(semanticCache.invalidateSession).not.toHaveBeenCalled();
+    });
+
+    it('still records Langfuse score when cache invalidation DB lookup fails', async () => {
+      (prisma.message.findFirst as jest.Mock).mockRejectedValueOnce(new Error('DB down'));
+
+      const dto: FeedbackDto = { traceId: 'trace-abc', score: -1 };
+      await expect(service.handleFeedback(dto)).resolves.toBeUndefined();
+
+      expect(langfuse.score).toHaveBeenCalledWith('trace-abc', -1);
+    });
+
+    it('does not throw when invalidateCacheForTrace finds no assistant message', async () => {
+      (prisma.message.findFirst as jest.Mock).mockResolvedValueOnce(null);
+
+      const dto: FeedbackDto = { traceId: 'unknown-trace', score: -1 };
+      await expect(service.handleFeedback(dto)).resolves.toBeUndefined();
     });
   });
 

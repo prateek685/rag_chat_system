@@ -1,7 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EnvConfig } from '../../../config/env.config';
 import { LangfuseTraceClient } from 'langfuse';
 import OpenAI from 'openai';
+import { withLlmRetry } from '../../../common/utils/llm-retry.util';
 import { LangfuseService } from '../../observability/langfuse.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { COSINE_SIMILARITY_THRESHOLD } from '../prompts/system-prompt';
@@ -47,11 +49,11 @@ export class RetrievalNodeService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly langfuseService: LangfuseService,
-    configService: ConfigService,
+    configService: ConfigService<EnvConfig, true>,
   ) {
-    this.embeddingModel = configService.getOrThrow<string>('EMBEDDING_MODEL');
+    this.embeddingModel = configService.get('EMBEDDING_MODEL', { infer: true });
     this.openai = new OpenAI({
-      apiKey: configService.getOrThrow<string>('OPENROUTER_API_KEY'),
+      apiKey: configService.get('OPENROUTER_API_KEY', { infer: true }),
       baseURL: 'https://openrouter.ai/api/v1',
     });
   }
@@ -72,9 +74,12 @@ export class RetrievalNodeService {
       input: { query: state.userQuery, sessionId: state.sessionId },
     });
 
-    // Embed the query here — only RAG_QUERY reaches this node, so GREETING/VIOLATION
-    // paths never pay the embedding latency cost.
-    const queryEmbedding = await this.embedQuery(state.userQuery, state.sessionId, trace);
+    // Use pre-computed embedding from ChatService if available (set when semantic cache is active).
+    // Falls back to embedding here for backward compatibility and GREETING/VIOLATION skip paths.
+    const queryEmbedding =
+      state.queryEmbedding.length > 0
+        ? state.queryEmbedding
+        : await this.embedQuery(state.userQuery, state.sessionId, trace);
 
     const start = Date.now();
     const embeddingParam = `[${queryEmbedding.join(',')}]`;
@@ -237,11 +242,19 @@ export class RetrievalNodeService {
   }
 
   /**
-   * Embeds the user query via OpenRouter using the configured embedding model.
-   * Creates a Langfuse generation observation with token usage and latency.
-   * Throws on failure — the graph catches it and writes an error SSE event.
+   * Embeds a query string via OpenRouter using the configured embedding model.
+   * Public so ChatService can pre-compute the embedding for semantic cache lookup
+   * before the graph runs — RetrievalNode then reuses the result from state.
+   *
+   * Retries on transient failures (429, 5xx) with exponential backoff.
+   * Throws on unrecoverable failure — the graph catches it and writes an error SSE event.
+   *
+   * @param query - Text to embed.
+   * @param sessionId - Used for log correlation.
+   * @param trace - Langfuse trace client (may be null).
+   * @returns Dense embedding vector.
    */
-  private async embedQuery(
+  async embedQuery(
     query: string,
     sessionId: string,
     trace: LangfuseTraceClient | null,
@@ -254,11 +267,16 @@ export class RetrievalNodeService {
 
     const start = Date.now();
     try {
-      const response = await this.openai.embeddings.create({
-        model: this.embeddingModel,
-        input: query,
-        encoding_format: 'float',
-      });
+      const response = await withLlmRetry(
+        () =>
+          this.openai.embeddings.create({
+            model: this.embeddingModel,
+            input: query,
+            encoding_format: 'float',
+          }),
+        this.logger,
+        { operation: 'embed_query', sessionId },
+      );
 
       const embedding = response.data[0]?.embedding;
       if (!Array.isArray(embedding)) {

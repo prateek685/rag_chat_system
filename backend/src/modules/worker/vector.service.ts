@@ -1,5 +1,6 @@
 import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EnvConfig } from '../../config/env.config';
 import OpenAI from 'openai';
 import { Document as LangChainDocument } from '@langchain/core/documents';
 import { Prisma } from '@prisma/client';
@@ -39,15 +40,15 @@ export class VectorService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly configService: ConfigService,
+    private readonly configService: ConfigService<EnvConfig, true>,
     private readonly langfuseService: LangfuseService,
   ) {
-    this.embeddingModel = this.configService.getOrThrow<string>('EMBEDDING_MODEL');
+    this.embeddingModel = this.configService.get('EMBEDDING_MODEL', { infer: true });
     // All embedding calls route through OpenRouter's OpenAI-compatible API.
     // Switch EMBEDDING_MODEL to 'openai/text-embedding-3-small' to use OpenAI
     // via OpenRouter's proxy without any code change.
     this.openai = new OpenAI({
-      apiKey: this.configService.getOrThrow<string>('OPENROUTER_API_KEY'),
+      apiKey: this.configService.get('OPENROUTER_API_KEY', { infer: true }),
       baseURL: 'https://openrouter.ai/api/v1',
     });
   }

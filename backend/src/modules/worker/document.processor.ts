@@ -80,10 +80,21 @@ export class DocumentProcessor extends WorkerHost {
 
     try {
       // Phase 1: Mark as PROCESSING so the status endpoint reflects progress immediately.
-      await this.prisma.document.update({
+      // Also fetch sessionId to assert the denormalization invariant before any chunk writes.
+      const doc = await this.prisma.document.update({
         where: { id: documentId },
         data: { status: 'PROCESSING' },
+        select: { sessionId: true },
       });
+
+      // DENORMALIZATION INVARIANT: chunks inherit sessionId from the parent document.
+      // A mismatch means the job payload was corrupted — fail loudly before inserting any
+      // chunk row to prevent cross-session data leakage (zero-tolerance per CLAUDE.md).
+      if (doc.sessionId !== sessionId) {
+        throw new Error(
+          `Session ID mismatch: payload has "${sessionId}" but document "${documentId}" owns session "${doc.sessionId}". Aborting to prevent cross-session data leakage.`,
+        );
+      }
 
       // Phase 2: Verify the file is still present and readable (could be lost if disk fills).
       await fs.promises.access(filePath, fs.constants.R_OK);

@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException, PayloadTooLargeException, UnsupportedMediaTypeException } from '@nestjs/common';
 import { DocumentController } from './document.controller';
 import { DocumentService } from './document.service';
+import { DocumentUploadInterceptor } from './document-upload.interceptor';
 import { UploadDocumentResponseDto } from './dto/upload-document.dto';
 import { DocumentStatusResponseDto } from './dto/document-status.dto';
 
@@ -25,7 +26,8 @@ const mockFile = {
   size: 1024,
 } as Express.Multer.File;
 
-const mockReq = { sessionId: 'session-uuid-abc' } as unknown as Request & { sessionId: string };
+const mockReq = { sessionId: 'session-uuid-abc', file: mockFile } as unknown as Request & { sessionId: string; file?: Express.Multer.File };
+const mockReqNoFile = { sessionId: 'session-uuid-abc' } as unknown as Request & { sessionId: string; file?: Express.Multer.File };
 
 describe('DocumentController', () => {
   let controller: DocumentController;
@@ -44,7 +46,10 @@ describe('DocumentController', () => {
           },
         },
       ],
-    }).compile();
+    })
+      .overrideInterceptor(DocumentUploadInterceptor)
+      .useValue({ intercept: jest.fn() })
+      .compile();
 
     controller = module.get<DocumentController>(DocumentController);
     service = module.get(DocumentService);
@@ -54,7 +59,7 @@ describe('DocumentController', () => {
     it('calls service.uploadDocument with file and sessionId, returns 201 response', async () => {
       service.uploadDocument.mockResolvedValue(mockUploadResponse);
 
-      const result = await controller.uploadDocument(mockFile, mockReq as never);
+      const result = await controller.uploadDocument(mockReq as never);
 
       expect(service.uploadDocument).toHaveBeenCalledWith(mockFile, 'session-uuid-abc');
       expect(result).toEqual(mockUploadResponse);
@@ -62,28 +67,28 @@ describe('DocumentController', () => {
 
     it('throws BadRequestException when no file is provided', async () => {
       await expect(
-        controller.uploadDocument(undefined, mockReq as never),
+        controller.uploadDocument(mockReqNoFile as never),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(service.uploadDocument).not.toHaveBeenCalled();
     });
 
     it('propagates ConflictException from service (duplicate file)', async () => {
       service.uploadDocument.mockRejectedValue(new ConflictException('Duplicate'));
-      await expect(controller.uploadDocument(mockFile, mockReq as never)).rejects.toBeInstanceOf(
+      await expect(controller.uploadDocument(mockReq as never)).rejects.toBeInstanceOf(
         ConflictException,
       );
     });
 
     it('propagates UnsupportedMediaTypeException (wrong MIME type)', async () => {
       service.uploadDocument.mockRejectedValue(new UnsupportedMediaTypeException('Not allowed'));
-      await expect(controller.uploadDocument(mockFile, mockReq as never)).rejects.toBeInstanceOf(
+      await expect(controller.uploadDocument(mockReq as never)).rejects.toBeInstanceOf(
         UnsupportedMediaTypeException,
       );
     });
 
     it('propagates PayloadTooLargeException (file too big)', async () => {
       service.uploadDocument.mockRejectedValue(new PayloadTooLargeException('Too large'));
-      await expect(controller.uploadDocument(mockFile, mockReq as never)).rejects.toBeInstanceOf(
+      await expect(controller.uploadDocument(mockReq as never)).rejects.toBeInstanceOf(
         PayloadTooLargeException,
       );
     });

@@ -40,6 +40,11 @@ describe('SessionGuard', () => {
     await expect(guard.canActivate(ctx)).rejects.toThrow(BadRequestException);
   });
 
+  it('throws 400 when x-session-id is an empty string', async () => {
+    const ctx = mockContext({ 'x-session-id': '' });
+    await expect(guard.canActivate(ctx)).rejects.toThrow(BadRequestException);
+  });
+
   it('throws 400 when x-session-id is not a valid UUIDv4', async () => {
     const ctx = mockContext({ 'x-session-id': 'not-a-uuid' });
     await expect(guard.canActivate(ctx)).rejects.toThrow(BadRequestException);

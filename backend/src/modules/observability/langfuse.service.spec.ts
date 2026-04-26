@@ -22,7 +22,7 @@ describe('LangfuseService', () => {
   let service: LangfuseService;
 
   const mockConfigService = {
-    getOrThrow: jest.fn((key: string) => {
+    get: jest.fn((key: string) => {
       const map: Record<string, string> = {
         LANGFUSE_PUBLIC_KEY: 'pk-test',
         LANGFUSE_SECRET_KEY: 'sk-test',

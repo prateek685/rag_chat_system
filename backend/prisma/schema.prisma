@@ -59,6 +59,9 @@ model Document {
 model DocumentChunk {
   id         String   @id @default(uuid())
   documentId String   @map("document_id")
+  /// DENORMALIZED from Document.sessionId for retrieval query performance (avoids a join on every
+  /// hybrid-search query). MUST equal document.sessionId — enforced in the ingestion pipeline
+  /// before bulk-insert. See: src/modules/worker/document.processor.ts (session ID invariant check).
   sessionId  String   @map("session_id")
   content    String
   metadata   Json?

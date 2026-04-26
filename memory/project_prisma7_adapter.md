@@ -32,11 +32,12 @@ export default defineConfig({
 ### 3. `PrismaService` — adapter for runtime
 ```ts
 import { PrismaPg } from '@prisma/adapter-pg'
-constructor() {
-  const url = process.env.DATABASE_URL
-  if (!url) throw new Error('DATABASE_URL environment variable is not set')
-  super({ adapter: new PrismaPg({ connectionString: url }) })
-}
+import { EnvConfig } from '../../config/env.config';
+
+constructor(configService: ConfigService<EnvConfig, true>) {
+    const url = configService.get('DATABASE_URL', { infer: true });
+    super({ adapter: new PrismaPg({ connectionString: url }) });
+  }
 ```
 
 ## Installed packages
