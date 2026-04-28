@@ -1,0 +1,71 @@
+# ================================
+# Dependencies
+# ================================
+node_modules/
+.pnp
+.pnp.js
+
+# ================================
+# Build Output
+# ================================
+dist/
+build/
+
+# ================================
+# Environment Variables
+# ================================
+.env
+.env.*
+!.env.example
+
+# ================================
+# Logs
+# ================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ================================
+# Runtime / OS
+# ================================
+.DS_Store
+Thumbs.db
+
+# ================================
+# IDE / Editor
+# ================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ================================
+# TypeScript
+# ================================
+*.tsbuildinfo
+
+# ================================
+# Testing
+# ================================
+coverage/
+.nyc_output/
+
+# ================================
+# Package Manager Lock Files (keep only one)
+# ================================
+# Uncomment whichever you are NOT using:
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# ================================
+# Misc
+# ================================
+.cache/
+tmp/
+temp/
