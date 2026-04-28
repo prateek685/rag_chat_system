@@ -21,6 +21,7 @@ jest.mock('fs', () => ({
   promises: {
     access: jest.fn(),
     readFile: jest.fn(),
+    stat: jest.fn(),
     unlink: jest.fn(),
   },
   constants: { R_OK: 4 },
@@ -101,6 +102,7 @@ describe('DocumentProcessor', () => {
 
     (fs.promises.access as jest.Mock).mockResolvedValue(undefined);
     (fs.promises.readFile as jest.Mock).mockResolvedValue('sample text content');
+    (fs.promises.stat as jest.Mock).mockResolvedValue({ size: 1_000 }); // well below 200 KB plain-text limit
     (fs.promises.unlink as jest.Mock).mockResolvedValue(undefined);
 
     // Default: 100 tokens (well below the 50k limit)
@@ -157,12 +159,16 @@ describe('DocumentProcessor', () => {
   // ---------------------------------------------------------------------------
 
   describe('process — chunking edge cases', () => {
-    it('calls embedAndStore with empty array for empty file content', async () => {
+    it('sets status FAILED when the file produces no extractable text', async () => {
       (fs.promises.readFile as jest.Mock).mockResolvedValue('');
 
-      await processor.process(makeJob());
+      await expect(processor.process(makeJob())).rejects.toThrow(/no text content/i);
 
-      expect(vectorService.embedAndStore).toHaveBeenCalledWith([], DOCUMENT_ID, SESSION_ID, expect.anything());
+      const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
+        ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
+      );
+      expect(failedCall).toBeDefined();
+      expect(vectorService.embedAndStore).not.toHaveBeenCalled();
     });
 
     it('calls embedAndStore with 1 chunk for single-character content', async () => {
@@ -291,6 +297,73 @@ describe('DocumentProcessor', () => {
         SESSION_ID,
         expect.anything(),
       );
+    });
+
+    it('sets FAILED with a user-friendly message when the PDF is password-protected', async () => {
+      const pdfParse = jest.requireMock<jest.Mock>('pdf-parse');
+      // pdf-parse throws this exact string for encrypted PDFs — we translate it at the boundary.
+      pdfParse.mockRejectedValueOnce(new Error('No password given'));
+      (fs.promises.readFile as jest.Mock).mockResolvedValue(Buffer.from('%PDF-'));
+      (prisma.document.update as jest.Mock).mockImplementation(({ data }: { data: { status: string } }) =>
+        Promise.resolve(data.status === 'PROCESSING' ? { sessionId: SESSION_ID } : {}),
+      );
+
+      await expect(processor.process(makeJob({ mimeType: 'application/pdf' }))).rejects.toThrow();
+
+      const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
+        ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
+      );
+      expect(failedCall).toBeDefined();
+      expect(failedCall[0].data.errorMessage).toMatch(/password-protected/i);
+    });
+
+    it('sets FAILED with a user-friendly message when the PDF is corrupted or unreadable', async () => {
+      const pdfParse = jest.requireMock<jest.Mock>('pdf-parse');
+      pdfParse.mockRejectedValueOnce(new Error('Invalid PDF structure'));
+      (fs.promises.readFile as jest.Mock).mockResolvedValue(Buffer.from('%PDF-'));
+      (prisma.document.update as jest.Mock).mockImplementation(({ data }: { data: { status: string } }) =>
+        Promise.resolve(data.status === 'PROCESSING' ? { sessionId: SESSION_ID } : {}),
+      );
+
+      await expect(processor.process(makeJob({ mimeType: 'application/pdf' }))).rejects.toThrow();
+
+      const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
+        ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
+      );
+      expect(failedCall).toBeDefined();
+      expect(failedCall[0].data.errorMessage).toMatch(/corrupted/i);
+    });
+
+    it('sets FAILED with an image-only message when the PDF parses but yields no text', async () => {
+      const pdfParse = jest.requireMock<jest.Mock>('pdf-parse');
+      pdfParse.mockResolvedValueOnce({ text: '   ' }); // whitespace-only — scanned/image PDF
+      (fs.promises.readFile as jest.Mock).mockResolvedValue(Buffer.from('%PDF-'));
+      (prisma.document.update as jest.Mock).mockImplementation(({ data }: { data: { status: string } }) =>
+        Promise.resolve(data.status === 'PROCESSING' ? { sessionId: SESSION_ID } : {}),
+      );
+
+      await expect(processor.process(makeJob({ mimeType: 'application/pdf' }))).rejects.toThrow();
+
+      const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
+        ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
+      );
+      expect(failedCall).toBeDefined();
+      expect(failedCall[0].data.errorMessage).toMatch(/images or scanned/i);
+    });
+
+    it('sets FAILED with a binary-data message when a plain-text file contains null bytes', async () => {
+      (fs.promises.readFile as jest.Mock).mockResolvedValue('header,value\x00\x01\x02garbage');
+      (prisma.document.update as jest.Mock).mockImplementation(({ data }: { data: { status: string } }) =>
+        Promise.resolve(data.status === 'PROCESSING' ? { sessionId: SESSION_ID } : {}),
+      );
+
+      await expect(processor.process(makeJob({ mimeType: 'text/csv' }))).rejects.toThrow();
+
+      const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
+        ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
+      );
+      expect(failedCall).toBeDefined();
+      expect(failedCall[0].data.errorMessage).toMatch(/binary data/i);
     });
   });
 

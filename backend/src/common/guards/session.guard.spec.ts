@@ -23,10 +23,8 @@ describe('SessionGuard', () => {
     },
   };
   const mockRedis = {
-    client: {
-      get: jest.fn().mockResolvedValue(null),
-      setex: jest.fn().mockResolvedValue('OK'),
-    },
+    get: jest.fn().mockResolvedValue(null),
+    setex: jest.fn().mockResolvedValue('OK'),
   };
 
   beforeEach(() => {
@@ -72,7 +70,7 @@ describe('SessionGuard', () => {
       create: { id: VALID_UUID },
       update: {},
     });
-    expect(mockRedis.client.setex).toHaveBeenCalledWith(
+    expect(mockRedis.setex).toHaveBeenCalledWith(
       `session:exists:${VALID_UUID}`,
       300,
       '1',
