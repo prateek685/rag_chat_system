@@ -8,7 +8,7 @@ export interface RetrievedChunk {
   /** Original upload filename from the documents table — resolved after retrieval. */
   filename: string;
   rrfScore: number;
-  /** Cosine similarity from pgvector (1 - cosine_distance). Used for the 0.60 guardrail check. */
+  /** Cosine similarity from pgvector (1 - cosine_distance). Used for the 0.30 guardrail check (COSINE_SIMILARITY_THRESHOLD). */
   cosineSimilarity: number;
   metadata: Record<string, unknown> | null;
 }
@@ -32,7 +32,7 @@ export interface Citation {
 
 /**
  * Route classification from RouterNode.
- * NO_CONTEXT is set by RetrievalNode when top chunk cosine similarity < 0.60.
+ * NO_CONTEXT is set by RetrievalNode when top chunk cosine similarity < COSINE_SIMILARITY_THRESHOLD (0.30).
  */
 export type ChatRoute = 'RAG_QUERY' | 'GREETING' | 'VIOLATION' | 'NO_CONTEXT';
 

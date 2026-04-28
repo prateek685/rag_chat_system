@@ -85,7 +85,7 @@ BullMQ retry policy: 3 attempts, exponential backoff (2s → 4s → 8s). Failed 
 4. **LangGraph routing** — `gpt-4o-mini` classifies intent: `RAG_QUERY | GREETING | VIOLATION`
 5. **Hybrid search** — RRF over pgvector (dense, cosine) + tsvector (BM25); retrieve Top 50
 6. **Rerank** — Cohere Rerank 3 (or local HuggingFace fallback); keep Top 5; timeout 600ms
-7. **Guardrail check** — if top reranker score < 0.60, return canned "no relevant context" reply
+7. **Guardrail check** — if top reranker score < 0.30, return canned "no relevant context" reply
 8. **Prompt assembly** — System prompt + Running Summary + last 4–6 messages + 5 chunks + user query
 9. **Stream** — SSE via `res.write()`; frontend renders with `react-markdown`
 10. **Async save** — persist Q/A to Postgres, update Redis cache, finalize Langfuse trace
@@ -109,7 +109,7 @@ System prompt is placed at the **end** of the message array (not the beginning) 
 | Type | Trigger | Action |
 |---|---|---|
 | Input | Router returns `VIOLATION` | Return canned refusal, skip pipeline |
-| Context | Top reranker score < 0.60 | Return "no relevant context found" |
+| Context | Top reranker score < 0.30 | Return "no relevant context found" |
 | Token budget | Session exceeds 100k tokens | Halt generation, prompt user to clear session |
 | File size | Doc > 50k tokens or 10MB | Reject with `413` |
 | Rate limit | > 10 messages/min per session | `429` response |
@@ -296,7 +296,7 @@ if (latencyMs > BUDGET_MS) {
  * Scores below this indicate no semantically relevant chunks exist for the query.
  * Returning a canned response is preferable to hallucinating from low-quality context.
  */
-const RERANKER_SCORE_THRESHOLD = 0.60;
+const RERANKER_SCORE_THRESHOLD = 0.30;
 ```
 - `TODO` comments must include a ticket reference and owner: `// TODO(#123, @owner): implement semantic dedup`. A bare `TODO` without context will be rejected in PR review.
 - No commented-out code in production branches. Delete it — version control has the history.

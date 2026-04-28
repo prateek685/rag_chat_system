@@ -21,6 +21,15 @@ import {
 const MAX_TOKEN_COUNT = 50_000;
 
 /**
+ * Pre-parse byte ceiling for plain-text files (txt, csv, md).
+ * For UTF-8 prose, 4 bytes/token is a conservative lower bound — meaning any plain-text
+ * file larger than this is guaranteed to exceed MAX_TOKEN_COUNT after parsing.
+ * Rejecting here avoids reading the full file into memory before discovering it's over budget.
+ * PDFs cannot use this gate: binary overhead makes file size an unreliable token proxy.
+ */
+const MAX_PLAIN_TEXT_BYTES = MAX_TOKEN_COUNT * 4; // 200 KB
+
+/**
  * ~250 tokens at 4 chars/token. Leaves headroom for 5 chunks
  * to fit in the 2048-token context slot reserved for retrieved context.
  */
@@ -99,14 +108,48 @@ export class DocumentProcessor extends WorkerHost {
       // Phase 2: Verify the file is still present and readable (could be lost if disk fills).
       await fs.promises.access(filePath, fs.constants.R_OK);
 
+      // Phase 2b: Pre-parse byte gate for plain-text files.
+      // PDFs are skipped here — binary overhead makes size an unreliable token proxy,
+      // so PDFs are checked after parse in Phase 4 below.
+      if (PLAIN_TEXT_MIME_TYPES.has(mimeType)) {
+        const { size: fileSizeBytes } = await fs.promises.stat(filePath);
+        if (fileSizeBytes > MAX_PLAIN_TEXT_BYTES) {
+          this.logger.warn({
+            event: 'token_limit_exceeded_pre_parse',
+            documentId,
+            sessionId,
+            mimeType,
+            fileSizeBytes,
+            maxBytes: MAX_PLAIN_TEXT_BYTES,
+            maxTokenCount: MAX_TOKEN_COUNT,
+          });
+          throw new Error(
+            `Document exceeds size limit before parsing: ${fileSizeBytes} bytes ` +
+            `(max ~${MAX_PLAIN_TEXT_BYTES} bytes for plain text, equating to ~${MAX_TOKEN_COUNT} tokens). ` +
+            'Please split the document into smaller files.',
+          );
+        }
+      }
+
       // Phase 3: Parse the file into raw text.
       const rawText = await this.parseFile(filePath, mimeType);
 
       // Phase 4: Count tokens and enforce the 50k limit.
+      // For PDFs this is the first opportunity to gate on size — parse cost is unavoidable.
+      // The warn log here lets us monitor how often large documents are rejected post-parse.
       const tokenCount = await this.countTokens(rawText);
       if (tokenCount > MAX_TOKEN_COUNT) {
+        this.logger.warn({
+          event: 'token_limit_exceeded_post_parse',
+          documentId,
+          sessionId,
+          mimeType,
+          tokenCount,
+          maxTokenCount: MAX_TOKEN_COUNT,
+        });
         throw new Error(
-          `Document exceeds token limit: ${tokenCount} tokens (max ${MAX_TOKEN_COUNT})`,
+          `Document exceeds token limit: ${tokenCount} tokens (max ${MAX_TOKEN_COUNT}). ` +
+          'Please split the document into smaller files.',
         );
       }
 
@@ -115,6 +158,12 @@ export class DocumentProcessor extends WorkerHost {
         [rawText],
         [{ source: originalFilename }],
       );
+
+      // Guard: an empty PDF or all-whitespace file produces zero chunks.
+      // Marking it COMPLETED would mislead the user — all retrieval queries would return NO_CONTEXT.
+      if (chunks.length === 0) {
+        throw new Error('Document produced no extractable text. The file may be empty, image-only, or contain only whitespace.');
+      }
 
       // Phase 6 + 7: Batch-embed all chunks in one OpenAI call, then bulk-insert.
       // Trace is forwarded so the embedding generation span nests under this job's trace.

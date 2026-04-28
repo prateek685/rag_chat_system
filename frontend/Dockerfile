@@ -31,6 +31,10 @@ COPY --from=builder /app/public            ./public
 # Run as non-root user
 USER node
 
-EXPOSE 3000
+# Match the port mapping in docker-compose.yml ("127.0.0.1:3001:3001").
+# next.js standalone server.js reads PORT at runtime; without this it defaults to 3000,
+# leaving container:3001 with nothing listening while the compose mapping expects it.
+ENV PORT=3001
+EXPOSE 3001
 
 CMD ["node", "server.js"]

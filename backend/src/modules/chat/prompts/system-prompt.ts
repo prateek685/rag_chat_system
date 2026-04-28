@@ -19,12 +19,12 @@ Rules:
  * Retrieved chunks with a top similarity below this value indicate that the query
  * has no semantically relevant match in the uploaded documents.
  *
- * Set to 0.30 for nvidia/llama-nemotron-embed-vl-1b-v2 — this model produces lower
- * absolute similarity scores than commercial models (e.g. text-embedding-3-small targets ~0.60).
- * Observed ranges: clearly irrelevant queries ~0.10–0.15, relevant queries ~0.35–0.55.
- * Raise toward 0.50 when switching to a higher-quality embedding model.
+ * Set to 0.30 — observed "clearly irrelevant" query scores range ~0.10–0.15 on
+ * free-tier embedding models; 0.30 sits ~10% above the highest irrelevant score seen.
+ * Raise toward 0.50 when switching to a higher-quality model (e.g. text-embedding-3-small).
+ * Monitor Langfuse "no_context_fired" metric: if it never fires in production the threshold is too low.
  */
-export const COSINE_SIMILARITY_THRESHOLD = 0.20;
+export const COSINE_SIMILARITY_THRESHOLD = 0.30;
 
 /** Canned response when no relevant context is found (top chunk similarity < threshold). */
 export const NO_CONTEXT_RESPONSE =

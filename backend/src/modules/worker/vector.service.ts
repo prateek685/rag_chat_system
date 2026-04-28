@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { LangfuseTraceClient } from 'langfuse';
 import { PrismaService } from '../prisma/prisma.service';
 import { LangfuseService } from '../observability/langfuse.service';
+import { withLlmRetry } from '../../common/utils/llm-retry.util';
 
 /**
  * Threshold for the embeddings API call latency alarm.
@@ -84,11 +85,18 @@ export class VectorService {
     let promptTokens: number | undefined;
     let totalTokens: number | undefined;
     try {
-      const response = await this.openai.embeddings.create({
-        model: this.embeddingModel,
-        input: texts,
-        encoding_format: "float"
-      });
+      // maxAttempts: 2 — BullMQ already retries the full job up to 3×; keeping inner retries
+      // at 2 caps the worst-case delay at ~1.2s before BullMQ takes over, avoiding a compounding
+      // retry window of 8s+ that re-runs the full parse + chunk + embed cycle unnecessarily.
+      const response = await withLlmRetry(
+        () => this.openai.embeddings.create({
+          model: this.embeddingModel,
+          input: texts,
+          encoding_format: 'float',
+        }),
+        this.logger,
+        { operation: 'embeddings_batch', sessionId, maxAttempts: 2 },
+      );
       // Guard against non-standard OpenRouter responses that omit the data field.
       // Some free-tier or vision-language models return unexpected response shapes.
       if (!response.data || response.data.length === 0) {

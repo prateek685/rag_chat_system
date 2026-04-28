@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { Response } from 'express';
 import { LangfuseTraceClient } from 'langfuse';
 import { LangfuseService } from '../observability/langfuse.service';
@@ -278,8 +278,7 @@ export class ChatService {
     });
 
     if (!lastUser) {
-      res.status(400).json({ message: 'No user message found to retry' });
-      return;
+      throw new BadRequestException('No user message found to retry');
     }
 
     // Invalidate stale cache so the wrong response is not served again.

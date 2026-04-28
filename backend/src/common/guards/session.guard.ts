@@ -53,8 +53,10 @@ export class SessionGuard implements CanActivate {
 
     // Cache session existence to avoid a DB upsert on every request.
     // On cache miss, upsert once and set TTL — subsequent requests skip the DB entirely.
+    // Typed wrappers are used here (not redis.client) so a Redis blip returns null
+    // (fail-open) instead of throwing, keeping the request alive at the cost of one extra DB upsert.
     const cacheKey = `session:exists:${sessionId}`;
-    const cached = await this.redis.client.get(cacheKey);
+    const cached = await this.redis.get(cacheKey);
 
     if (!cached) {
       await this.prisma.session.upsert({
@@ -62,7 +64,7 @@ export class SessionGuard implements CanActivate {
         create: { id: sessionId },
         update: {},
       });
-      await this.redis.client.setex(cacheKey, SESSION_EXISTS_TTL_SECONDS, '1');
+      await this.redis.setex(cacheKey, SESSION_EXISTS_TTL_SECONDS, '1');
     }
 
     request.sessionId = sessionId;
