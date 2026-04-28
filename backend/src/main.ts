@@ -1,5 +1,6 @@
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EnvConfig } from './config/env.config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
@@ -8,19 +9,18 @@ import { AppModule } from './app.module';
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
 
-  // Graceful shutdown — triggers OnModuleDestroy on SIGTERM so BullMQ/Prisma/Redis
-  // connections close cleanly before the Docker container exits.
+  // SIGTERM → OnModuleDestroy so BullMQ/Prisma/Redis drain cleanly on Docker stop.
   app.enableShutdownHooks();
 
-  // Standard security headers (X-Frame-Options, CSP, HSTS, etc.) — one line of defense for free.
+  // ~11 security headers (X-Frame-Options, CSP, HSTS, etc.) — one line of defense for free.
   app.use(helmet());
 
-  const configService = app.get(ConfigService);
+  const configService = app.get<ConfigService<EnvConfig, true>>(ConfigService);
 
-  // Whitelist the frontend origin and the custom session header; credentials: true
-  // is required for x-session-id to be forwarded by the browser.
+  // Whitelist frontend origin and the custom session header.
+  // credentials: true is required for x-session-id to be forwarded by the browser.
   app.enableCors({
-    origin: configService.get<string>('FRONTEND_URL', 'http://localhost:3001'),
+    origin: configService.get('FRONTEND_URL', { infer: true }),
     credentials: true,
     allowedHeaders: ['Content-Type', 'x-session-id'],
   });
@@ -44,7 +44,7 @@ async function bootstrap(): Promise<void> {
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('api/docs', app, document);
 
-  const port = configService.get<number>('PORT', 8080);
+  const port = configService.get('PORT', { infer: true });
   await app.listen(port);
 }
 

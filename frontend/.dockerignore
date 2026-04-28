@@ -1,0 +1,13 @@
+node_modules
+.next
+out
+build
+dist
+.git
+.env
+.env.*
+coverage
+*.log
+.vscode
+.idea
+test
