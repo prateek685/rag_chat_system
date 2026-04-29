@@ -34,7 +34,7 @@ import { RetrievalNodeService } from './nodes/retrieval.node';
 import { SummarizeMemoryNodeService } from './nodes/summarize-memory.node';
 import { PromptBuilderService } from './prompt-builder.service';
 import { SemanticCacheService } from './semantic-cache.service';
-import { NO_CONTEXT_RESPONSE, VIOLATION_RESPONSE } from './prompts/system-prompt';
+import { NO_CONTEXT_RESPONSE, RAG_SYSTEM_PROMPT, VIOLATION_RESPONSE } from './prompts/system-prompt';
 import { RAGState, RetrievedChunk, SlidingWindowMessage } from './types/rag-state.types';
 
 const makeMockRes = (): jest.Mocked<Response> =>
@@ -238,6 +238,17 @@ describe('ChatService', () => {
       const messages = promptBuilder.buildMessages(state);
       const contents = messages.map((m) => String(m.content));
       expect(contents).not.toContain('[SYSTEM DIRECTIVE: Document deleted]');
+    });
+
+    it('system prompt contains PDF table formatting rules for superscript exponents', () => {
+      // These rules were added after a live bug where the LLM read "2.3·10\n19" as 2.3×10²⁰
+      // because pdf-parse puts superscript exponents on their own line.
+      expect(RAG_SYSTEM_PROMPT).toContain('Superscript exponents are extracted onto their own line');
+      expect(RAG_SYSTEM_PROMPT).toContain('·10');
+    });
+
+    it('system prompt instructs the LLM to count columns before reading table data rows', () => {
+      expect(RAG_SYSTEM_PROMPT).toContain('counting columns from the header row');
     });
   });
 

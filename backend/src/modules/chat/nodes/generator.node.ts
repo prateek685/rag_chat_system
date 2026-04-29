@@ -5,12 +5,21 @@ import { LangfuseTraceClient } from 'langfuse';
 import OpenAI from 'openai';
 import { AIMessage, HumanMessage } from '@langchain/core/messages';
 import { withLlmRetry } from '../../../common/utils/llm-retry.util';
+import { computeKeywordOverlap } from '../../../common/utils/faithfulness.util';
 import { LangfuseService } from '../../observability/langfuse.service';
 import { PromptBuilderService } from '../prompt-builder.service';
 import { RAGState, WriteTokenFn } from '../types/rag-state.types';
 
 /** Time-to-first-token latency budget. */
 const TTFT_BUDGET_MS = 800;
+
+/**
+ * Keyword-overlap score below this value triggers a warn log.
+ * Does not block the response — faithfulness scoring is observability-only.
+ * Calibrated at 0.30: typical well-grounded responses score 0.35–0.70;
+ * below 0.30 suggests the response may contain content not present in the retrieved chunks.
+ */
+const FAITHFULNESS_WARN_THRESHOLD = 0.30;
 
 /**
  * GeneratorNodeService streams the final LLM response token-by-token.
@@ -134,6 +143,26 @@ export class GeneratorNodeService {
     }
 
     const latencyMs = Date.now() - start;
+
+    // Keyword-overlap faithfulness signal — only meaningful for RAG_QUERY with retrieved chunks.
+    // Logs to Langfuse as a trace score so average faithfulness is visible on the dashboard.
+    // A low score warrants investigation but does not block the response.
+    if (state.route === 'RAG_QUERY' && state.chunks.length > 0) {
+      const faithfulnessScore = computeKeywordOverlap(
+        fullResponse,
+        state.chunks.map((c) => c.content),
+      );
+      this.langfuseService.scoreTrace(state.traceId, 'keyword-overlap', faithfulnessScore);
+      if (faithfulnessScore < FAITHFULNESS_WARN_THRESHOLD) {
+        this.logger.warn({
+          event: 'low_faithfulness_score',
+          score: faithfulnessScore,
+          threshold: FAITHFULNESS_WARN_THRESHOLD,
+          sessionId: state.sessionId,
+        });
+      }
+    }
+
     this.langfuseService.finalizeGeneration(generation, {
       output: fullResponse,
       usage: { promptTokens, completionTokens, totalTokens },

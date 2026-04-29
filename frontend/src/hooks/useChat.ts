@@ -31,9 +31,14 @@ export function useChat(sessionId: string): UseChatReturn {
     setMessages(readStorage<Message[]>(msgsKey(sessionId), []));
   }, [sessionId]);
 
-  const persist = useCallback((msgs: Message[]) => {
-    if (sessionIdRef.current) writeStorage(msgsKey(sessionIdRef.current), msgs);
-  }, []);
+  // Reactively persist messages on every state change — single authoritative write point.
+  // Guard with messages.length > 0 to avoid overwriting stored data during the initial
+  // empty render before hydration completes.
+  useEffect(() => {
+    if (sessionIdRef.current && messages.length > 0) {
+      writeStorage(msgsKey(sessionIdRef.current), messages);
+    }
+  }, [messages]);
 
   const stream = useCallback(
     async (endpoint: string, body: Record<string, unknown>, isRetry: boolean) => {
@@ -173,15 +178,11 @@ export function useChat(sessionId: string): UseChatReturn {
           );
         }
       } finally {
-        setMessages((prev) => {
-          persist(prev);
-          return prev;
-        });
         abortRef.current = null;
         setIsStreaming(false);
       }
     },
-    [persist],
+    [],
   );
 
   function sendMessage(text: string): void {
@@ -207,13 +208,9 @@ export function useChat(sessionId: string): UseChatReturn {
   }
 
   function submitFeedback(traceId: string, score: 1 | -1): void {
-    setMessages((prev) => {
-      const updated = prev.map((m) =>
-        m.traceId === traceId ? { ...m, feedback: score } : m,
-      );
-      persist(updated);
-      return updated;
-    });
+    setMessages((prev) =>
+      prev.map((m) => (m.traceId === traceId ? { ...m, feedback: score } : m)),
+    );
     apiSubmitFeedback({ traceId, score }).catch((err: unknown) => {
       console.warn('Feedback submission failed:', err);
     });

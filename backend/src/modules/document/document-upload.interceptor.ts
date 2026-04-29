@@ -63,10 +63,11 @@ export class DocumentUploadInterceptor implements NestInterceptor {
 
 /**
  * Builds Multer disk-storage options for the given uploads base path.
+ * Exported so unit tests can invoke the storage callbacks directly.
  *
  * @param uploadsBase - Absolute path to the uploads root directory.
  */
-function buildMulterOptions(uploadsBase: string): MulterOptions {
+export function buildMulterOptions(uploadsBase: string): MulterOptions {
   return {
     storage: diskStorage({
       destination: (req: unknown, _file, cb) => {

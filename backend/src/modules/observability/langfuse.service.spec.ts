@@ -115,27 +115,72 @@ describe('LangfuseService', () => {
       const span = service.createSpan(null, { name: 'router' });
       expect(span).toBeNull();
     });
+
+    it('returns null and does not throw when trace.span() throws', () => {
+      const trace = service.createTrace({ name: 'chat', sessionId: 's', input: 'q' });
+      (getMockClient().trace.mock.results[0].value as { span: jest.Mock }).span
+        .mockImplementationOnce(() => { throw new Error('span unavailable'); });
+
+      let result: ReturnType<LangfuseService['createSpan']>;
+      expect(() => {
+        result = service.createSpan(trace, { name: 'router' });
+      }).not.toThrow();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      expect(result!).toBeNull();
+    });
   });
 
   describe('finalizeSpan', () => {
     it('does not throw when span is null', () => {
       expect(() => service.finalizeSpan(null, 'output')).not.toThrow();
     });
+
+    it('does not throw when span.end() throws', () => {
+      const mockSpan = {
+        end: jest.fn().mockImplementationOnce(() => { throw new Error('end error'); }),
+      } as unknown as import('langfuse').LangfuseSpanClient;
+      expect(() => service.finalizeSpan(mockSpan, 'output')).not.toThrow();
+    });
+  });
+
+  describe('scoreTrace', () => {
+    it('calls langfuse.score() with traceId, name, and value', () => {
+      service.scoreTrace('trace-abc', 'keyword-overlap', 0.75);
+      expect(getMockClient().score).toHaveBeenCalledWith({
+        traceId: 'trace-abc',
+        name: 'keyword-overlap',
+        value: 0.75,
+        comment: undefined,
+      });
+    });
+
+    it('forwards an optional comment', () => {
+      service.scoreTrace('trace-abc', 'faithfulness', 0.5, 'low overlap');
+      expect(getMockClient().score).toHaveBeenCalledWith(
+        expect.objectContaining({ comment: 'low overlap' }),
+      );
+    });
+
+    it('does not throw when SDK.score() throws synchronously', () => {
+      getMockClient().score.mockImplementationOnce(() => { throw new Error('sdk error'); });
+      expect(() => service.scoreTrace('trace-abc', 'keyword-overlap', 0.5)).not.toThrow();
+    });
   });
 
   describe('score', () => {
-    it('calls langfuse.score() with traceId, name=user-feedback, and value', async () => {
-      await service.score('trace-abc', 1);
+    it('calls langfuse.score() with traceId, name=user-feedback, and value', () => {
+      service.score('trace-abc', 1);
       expect(getMockClient().score).toHaveBeenCalledWith({
         traceId: 'trace-abc',
         name: 'user-feedback',
         value: 1,
+        comment: undefined,
       });
     });
 
-    it('does not throw when SDK.score() rejects', async () => {
-      getMockClient().score.mockRejectedValueOnce(new Error('network error'));
-      await expect(service.score('trace-abc', -1)).resolves.toBeUndefined();
+    it('does not throw when SDK.score() throws synchronously', () => {
+      getMockClient().score.mockImplementationOnce(() => { throw new Error('sdk error'); });
+      expect(() => service.score('trace-abc', -1)).not.toThrow();
     });
   });
 
@@ -160,6 +205,13 @@ describe('LangfuseService', () => {
 
     it('does not throw when trace is null', () => {
       expect(() => service.finalizeTrace(null, 'response')).not.toThrow();
+    });
+
+    it('does not throw when trace.update() throws (in finalizeTrace)', () => {
+      const trace = service.createTrace({ name: 'chat', sessionId: 's', input: 'q' });
+      (getMockClient().trace.mock.results[0].value as { update: jest.Mock }).update
+        .mockImplementationOnce(() => { throw new Error('update failed'); });
+      expect(() => service.finalizeTrace(trace, 'response')).not.toThrow();
     });
   });
 
@@ -238,6 +290,13 @@ describe('LangfuseService', () => {
         expect.objectContaining({ usage: undefined }),
       );
     });
+
+    it('does not throw when generation.end() throws', () => {
+      const mockGeneration = {
+        end: jest.fn().mockImplementationOnce(() => { throw new Error('end error'); }),
+      } as unknown as import('langfuse').LangfuseGenerationClient;
+      expect(() => service.finalizeGeneration(mockGeneration, { output: 'result' })).not.toThrow();
+    });
   });
 
   describe('recordTraceError', () => {
@@ -251,6 +310,25 @@ describe('LangfuseService', () => {
 
     it('does not throw when trace is null', () => {
       expect(() => service.recordTraceError(null, 'some_error', 'msg')).not.toThrow();
+    });
+
+    it('does not throw when trace.update() throws (in recordTraceError)', () => {
+      const trace = service.createTrace({ name: 'chat', sessionId: 's', input: 'q' });
+      (getMockClient().trace.mock.results[0].value as { update: jest.Mock }).update
+        .mockImplementationOnce(() => { throw new Error('update failed'); });
+      expect(() => service.recordTraceError(trace, 'llm_error', 'timeout')).not.toThrow();
+    });
+  });
+
+  describe('onModuleDestroy', () => {
+    it('calls flushAsync to drain the Langfuse event queue', async () => {
+      await service.onModuleDestroy();
+      expect(getMockClient().flushAsync).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not throw when flushAsync rejects', async () => {
+      getMockClient().flushAsync.mockRejectedValueOnce(new Error('flush error'));
+      await expect(service.onModuleDestroy()).resolves.toBeUndefined();
     });
   });
 });

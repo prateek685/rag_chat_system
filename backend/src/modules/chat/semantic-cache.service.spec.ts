@@ -74,6 +74,28 @@ describe('SemanticCacheService', () => {
       expect(result).toBeNull();
     });
 
+    it('returns null when similarity is exactly 0.97 — just below the 0.98 threshold', async () => {
+      // Construct two unit vectors in 2D with cosine similarity = 0.97.
+      // stored = [1, 0]; query = [0.97, sin(θ)] where cos(θ) = 0.97.
+      const stored = [1, 0];
+      const query = [0.97, Math.sqrt(1 - 0.97 ** 2)];
+      redis.scan.mockResolvedValue(['semantic:session-1:abc']);
+      redis.get.mockResolvedValue(JSON.stringify({ embedding: stored, response: 'Cached' }));
+
+      const result = await service.lookup('session-1', query);
+      expect(result).toBeNull();
+    });
+
+    it('returns the cached response when similarity is exactly 0.98 — at the threshold', async () => {
+      const stored = [1, 0];
+      const query = [0.98, Math.sqrt(1 - 0.98 ** 2)];
+      redis.scan.mockResolvedValue(['semantic:session-1:abc']);
+      redis.get.mockResolvedValue(JSON.stringify({ embedding: stored, response: 'Exact boundary hit' }));
+
+      const result = await service.lookup('session-1', query);
+      expect(result).toBe('Exact boundary hit');
+    });
+
     it('returns null when similarity is exactly 0 (orthogonal)', async () => {
       const dim = 4;
       redis.scan.mockResolvedValue(['semantic:session-1:abc']);

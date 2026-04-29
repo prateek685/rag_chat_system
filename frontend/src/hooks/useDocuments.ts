@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { v4 as uuid } from 'uuid';
 import type { Document } from '@/lib/types';
 import { docsKey, readStorage, writeStorage } from '@/lib/storage';
@@ -50,15 +50,15 @@ export function useDocuments(sessionId: string): UseDocumentsReturn {
   const [uploadErrors, setUploadErrors] = useState<UploadError[]>([]);
   const pollingRef = useRef(new Map<string, ReturnType<typeof setInterval>>());
   const sessionIdRef = useRef(sessionId);
+  // Tracks whether the initial localStorage hydration has completed. Guards the
+  // reactive persistence effect from overwriting stored data during the first render
+  // (when documents is still []) and also allows persisting an empty array when the
+  // user deliberately deletes all documents.
+  const isHydratedRef = useRef(false);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
-
-  const persist = useCallback((docs: Document[]) => {
-    if (sessionIdRef.current)
-      writeStorage(docsKey(sessionIdRef.current), docs);
-  }, []);
 
   function startPolling(jobId: string, documentId: string): void {
     // Guard against React StrictMode double-invoke and duplicate resume on refresh
@@ -67,8 +67,8 @@ export function useDocuments(sessionId: string): UseDocumentsReturn {
     const intervalId = setInterval(async () => {
       try {
         const s = await getDocumentStatus(jobId);
-        setDocuments((prev) => {
-          const next = prev.map((d) =>
+        setDocuments((prev) =>
+          prev.map((d) =>
             d.id === documentId
               ? {
                   ...d,
@@ -77,14 +77,12 @@ export function useDocuments(sessionId: string): UseDocumentsReturn {
                   errorMessage: s.errorMessage ?? d.errorMessage,
                 }
               : d,
-          );
-          if (s.status === 'COMPLETED' || s.status === 'FAILED') {
-            clearInterval(pollingRef.current.get(jobId));
-            pollingRef.current.delete(jobId);
-            persist(next);
-          }
-          return next;
-        });
+          ),
+        );
+        if (s.status === 'COMPLETED' || s.status === 'FAILED') {
+          clearInterval(pollingRef.current.get(jobId));
+          pollingRef.current.delete(jobId);
+        }
       } catch {
         // Network error — keep polling; transient failures are recoverable
       }
@@ -98,6 +96,7 @@ export function useDocuments(sessionId: string): UseDocumentsReturn {
     if (!sessionId) return;
 
     const stored = readStorage<Document[]>(docsKey(sessionId), []);
+    isHydratedRef.current = true;
     setDocuments(stored);
 
     stored
@@ -111,6 +110,16 @@ export function useDocuments(sessionId: string): UseDocumentsReturn {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  // Reactively persist documents on every state change — single authoritative write point.
+  // isHydratedRef guards against overwriting stored data during the initial empty render
+  // before hydration completes, while still allowing an empty array to be persisted when
+  // the user deliberately deletes all documents.
+  useEffect(() => {
+    if (isHydratedRef.current && sessionIdRef.current) {
+      writeStorage(docsKey(sessionIdRef.current), documents);
+    }
+  }, [documents]);
+
   async function uploadSingle(file: File): Promise<void> {
     const tempId = uuid();
     const placeholder: Document = {
@@ -121,11 +130,7 @@ export function useDocuments(sessionId: string): UseDocumentsReturn {
       uploadedAt: new Date().toISOString(),
     };
 
-    setDocuments((prev) => {
-      const next = [...prev, placeholder];
-      persist(next);
-      return next;
-    });
+    setDocuments((prev) => [...prev, placeholder]);
 
     try {
       const res = await uploadDocument(file);
@@ -136,18 +141,10 @@ export function useDocuments(sessionId: string): UseDocumentsReturn {
         status: 'PENDING',
         uploadedAt: new Date().toISOString(),
       };
-      setDocuments((prev) => {
-        const next = prev.map((d) => (d.id === tempId ? doc : d));
-        persist(next);
-        return next;
-      });
+      setDocuments((prev) => prev.map((d) => (d.id === tempId ? doc : d)));
       startPolling(res.jobId, res.documentId);
     } catch (err: unknown) {
-      setDocuments((prev) => {
-        const next = prev.filter((d) => d.id !== tempId);
-        persist(next);
-        return next;
-      });
+      setDocuments((prev) => prev.filter((d) => d.id !== tempId));
 
       const status = (err as { response?: { status?: number } }).response
         ?.status;
@@ -196,11 +193,7 @@ export function useDocuments(sessionId: string): UseDocumentsReturn {
       pollingRef.current.delete(doc.jobId);
     }
 
-    setDocuments((prev) => {
-      const next = prev.filter((d) => d.id !== id);
-      persist(next);
-      return next;
-    });
+    setDocuments((prev) => prev.filter((d) => d.id !== id));
 
     apiDeleteDocument(id).catch((err: unknown) => {
       console.warn('Document delete failed:', (err as Error).message);
