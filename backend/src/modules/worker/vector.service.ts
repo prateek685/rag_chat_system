@@ -136,7 +136,15 @@ export class VectorService {
         model: this.embeddingModel,
         error: errorMessage,
       });
-      throw err;
+      // Pass through our own controlled exceptions — they already carry user-readable messages.
+      if (err instanceof InternalServerErrorException) {
+        throw err;
+      }
+      // Translate raw SDK errors at the integration boundary.
+      // Internal status codes and SDK internals must not reach user-facing surfaces.
+      throw new InternalServerErrorException(
+        'Document processing failed. Please try again.',
+      );
     }
     const latencyMs = Date.now() - start;
     if (latencyMs > EMBED_LATENCY_BUDGET_MS) {
@@ -165,7 +173,17 @@ export class VectorService {
       embedding: `[${vectors[i].join(',')}]`,
     }));
 
-    await this.bulkInsertChunks(rows);
+    try {
+      await this.bulkInsertChunks(rows);
+    } catch (err) {
+      this.logger.error({
+        event: 'chunk_store_failed',
+        documentId,
+        count: rows.length,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new InternalServerErrorException('Document processing failed. Please try again.');
+    }
     this.logger.log({ event: 'chunks_stored', documentId, count: rows.length, latencyMs });
   }
 
