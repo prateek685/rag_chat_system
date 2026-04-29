@@ -20,6 +20,7 @@ jest.mock('openai', () => ({
 }));
 
 import OpenAI from 'openai';
+import { InternalServerErrorException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { Document as LangChainDocument } from '@langchain/core/documents';
@@ -152,13 +153,30 @@ describe('VectorService', () => {
       expect(joinedSql.strings.join('')).toContain('::jsonb');
     });
 
-    it('rethrows OpenAI API errors without wrapping', async () => {
-      const apiError = new Error('OpenAI rate limit exceeded');
-      getMockCreate().mockRejectedValue(apiError);
+    it('translates raw OpenAI API errors to a user-friendly InternalServerErrorException', async () => {
+      getMockCreate().mockRejectedValue(new Error('OpenAI rate limit exceeded'));
 
-      await expect(service.embedAndStore(makeChunks(1), DOCUMENT_ID, SESSION_ID)).rejects.toBe(
-        apiError,
+      await expect(service.embedAndStore(makeChunks(1), DOCUMENT_ID, SESSION_ID)).rejects.toBeInstanceOf(
+        InternalServerErrorException,
       );
+    });
+
+    it('passes through InternalServerErrorException from model-response validation unchanged', async () => {
+      // Simulate the guard that fires when the embedding API returns an empty data array.
+      getMockCreate().mockResolvedValue({ data: [] });
+
+      const err = await service.embedAndStore(makeChunks(1), DOCUMENT_ID, SESSION_ID).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(InternalServerErrorException);
+      expect((err as InternalServerErrorException).message).toMatch(/Embedding API returned no data/i);
+    });
+
+    it('translates Prisma bulk-insert failure to a user-friendly InternalServerErrorException', async () => {
+      getMockCreate().mockResolvedValue({ data: [{ embedding: [0.1, 0.2] }] });
+      (prisma.$executeRaw as jest.Mock).mockRejectedValue(new Error('DB connection lost'));
+
+      const err = await service.embedAndStore(makeChunks(1), DOCUMENT_ID, SESSION_ID).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(InternalServerErrorException);
+      expect((err as InternalServerErrorException).message).toMatch(/Document processing failed/i);
     });
 
     it('inserts chunks with correct documentId and sessionId', async () => {

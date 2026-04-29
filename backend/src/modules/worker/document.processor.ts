@@ -67,6 +67,18 @@ const PLAIN_TEXT_MIME_TYPES = new Set<string>([
 export function postProcessPdfText(text: string): string {
   return text.replace(/([·×]10)\r?\n(\d{1,3})\b/g, '$1^$2');
 }
+/**
+* Thrown when pdf-parse encounters an encrypted/password-protected PDF.
+ * Decouples the user-facing message from the library's internal error string
+ * ("No password given") so message copy is stable across pdf-parse version bumps.
+ */
+class PasswordProtectedPdfError extends Error {
+  constructor() {
+    super(
+      'File is password-protected. Please upload an unlocked version.',
+    );
+    this.name = 'PasswordProtectedPdfError';
+  }
 
 /**
  * BullMQ worker for the document-processing queue.
@@ -217,7 +229,7 @@ export class DocumentProcessor extends WorkerHost {
       // Guard: an empty PDF or all-whitespace file produces zero chunks.
       // Marking it COMPLETED would mislead the user — all retrieval queries would return NO_CONTEXT.
       if (chunks.length === 0) {
-        throw new Error('Document produced no extractable text. The file may be empty, image-only, or contain only whitespace.');
+        throw new Error('No text content found. The file may be empty or contain only whitespace.');
       }
 
       // Phase 6 + 7: Batch-embed all chunks in one OpenAI call, then bulk-insert.
@@ -315,12 +327,38 @@ export class DocumentProcessor extends WorkerHost {
   ): Promise<{ text: string; numpages?: number }> {
     if (mimeType === 'application/pdf') {
       const buffer = await fs.promises.readFile(filePath);
-      const data = await pdfParse(buffer);
+      let data;
+      try {
+        data = await pdfParse(buffer);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // pdf-parse surfaces "No password given" for encrypted PDFs; also guard
+        // against future message changes by matching "encrypted" as a fallback.
+        if (/no password given|encrypted/i.test(msg)) {
+          throw new PasswordProtectedPdfError();
+        }
+        throw new Error('Could not read PDF — file may be corrupted or use an unsupported format.');
+      }
+      
+      // A successfully-parsed PDF with no text is almost certainly scanned or image-only.
+      // Returning empty text here would silently produce zero chunks and mislead the user.
+      if (!data.text || data.text.trim().length === 0) {
+        throw new Error(
+          'PDF contains only images or scanned content. Please use a text-based PDF or run OCR first.',
+        );
+      }
+      
       return { text: data.text, numpages: data.numpages };
     }
 
     if (PLAIN_TEXT_MIME_TYPES.has(mimeType)) {
-      return { text: await fs.promises.readFile(filePath, 'utf-8') };
+      const content = await fs.promises.readFile(filePath, 'utf-8');
+      // Null bytes are present in binary files but never in valid UTF-8 text.
+      // Letting binary data through produces garbled chunks that embed but return nonsense.
+      if (content.includes('\x00')) {
+        throw new Error('File contains binary data and cannot be processed as text.');
+      }
+      return { text: content };
     }
 
     // Defensive fallback — fileFilter in the controller should prevent this path.

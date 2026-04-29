@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'fs';
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { getQueueToken } from '@nestjs/bullmq';
 import { DocumentService } from './document.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -161,12 +161,12 @@ describe('DocumentService', () => {
       expect(result).toEqual({ jobId: JOB_ID, documentId: DOCUMENT_ID, status: 'PENDING' });
     });
 
-    it('deletes document row and rethrows when queue.add fails', async () => {
+    it('deletes document row and throws ServiceUnavailableException when queue.add fails', async () => {
       queue.add.mockRejectedValue(new Error('Redis unavailable'));
       (prisma.document.delete as jest.Mock).mockResolvedValue(mockDocument);
 
-      await expect(service.uploadDocument(mockFile, SESSION_ID)).rejects.toThrow(
-        'Redis unavailable',
+      await expect(service.uploadDocument(mockFile, SESSION_ID)).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
       );
       expect(prisma.document.delete).toHaveBeenCalledWith({ where: { id: DOCUMENT_ID } });
     });

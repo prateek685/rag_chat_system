@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'fs';
-import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Job, JobsOptions, Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
@@ -102,7 +102,8 @@ export class DocumentService {
         documentId: doc.id,
         error: err instanceof Error ? err.message : String(err),
       });
-      throw err;
+      // Translate the raw BullMQ/Redis error at the integration boundary.
+      throw new ServiceUnavailableException('Document processing failed. Please try again.');
     }
 
     // Store jobId so the status endpoint can look up the document by job reference.
