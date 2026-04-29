@@ -35,6 +35,15 @@ const MAX_PLAIN_TEXT_BYTES = MAX_TOKEN_COUNT * 4; // 200 KB
  */
 const CHUNK_SIZE = 1_000;
 
+/**
+ * Average character count per PDF page below which we classify the document as
+ * image-heavy. A typical text-dense research-paper page is ~3 000 chars; a page
+ * containing only a figure caption is ~200–400 chars; a fully image-only page is 0–50.
+ * 200 chars/page is a conservative floor that catches scanned PDFs and figure-heavy
+ * sections while avoiding false positives on sparse-but-valid documents.
+ */
+const LOW_TEXT_DENSITY_CHARS_PER_PAGE = 200;
+
 /** Ensures sentences straddling chunk boundaries are captured. */
 const CHUNK_OVERLAP = 200;
 
@@ -46,7 +55,20 @@ const PLAIN_TEXT_MIME_TYPES = new Set<string>([
 ]);
 
 /**
- * Thrown when pdf-parse encounters an encrypted/password-protected PDF.
+ * Fixes PDF text-extraction artifacts produced by pdf-parse:
+ * - Superscript exponents land on their own line because PDF superscripts occupy a separate
+ *   character-run that pdf-parse emits as a newline. E.g. "2.3·10\n19" → "2.3·10^19".
+ *
+ * Exported for unit testing. Apply only to PDF-extracted text.
+ *
+ * @param text - Raw text from pdf-parse.
+ * @returns Post-processed text with superscript exponents rejoined.
+ */
+export function postProcessPdfText(text: string): string {
+  return text.replace(/([·×]10)\r?\n(\d{1,3})\b/g, '$1^$2');
+}
+/**
+* Thrown when pdf-parse encounters an encrypted/password-protected PDF.
  * Decouples the user-facing message from the library's internal error string
  * ("No password given") so message copy is stable across pdf-parse version bumps.
  */
@@ -57,15 +79,13 @@ class PasswordProtectedPdfError extends Error {
     );
     this.name = 'PasswordProtectedPdfError';
   }
-}
 
 /**
  * BullMQ worker for the document-processing queue.
  * Orchestrates the full pipeline: validate → parse → chunk → embed → store → cleanup.
  * On any failure the document status is updated to FAILED before rethrowing
  * so the status endpoint reflects the failure in real time.
- */
-/**
+ *
  * lockDuration: worker holds the job lock for 30s, renewed every 15s while active.
  * maxStalledCount: job moves to failed after 2 stalls — prevents infinite crash loops.
  */
@@ -145,13 +165,46 @@ export class DocumentProcessor extends WorkerHost {
         }
       }
 
-      // Phase 3: Parse the file into raw text.
-      const rawText = await this.parseFile(filePath, mimeType);
+      // Phase 3: Parse the file into plain text, then post-process PDF artifacts.
+      // A Langfuse span captures extraction stats so we can audit parse quality in the dashboard.
+      const parseStart = Date.now();
+      const parseSpan = this.langfuseService.createSpan(trace, {
+        name: 'parse',
+        input: { originalFilename, mimeType },
+      });
+      const { text: rawText, numpages } = await this.parseFile(filePath, mimeType);
+      let documentText = mimeType === 'application/pdf' ? postProcessPdfText(rawText) : rawText;
+      this.langfuseService.finalizeSpan(
+        parseSpan,
+        { charCount: rawText.length, postProcessed: mimeType === 'application/pdf' },
+        { latencyMs: Date.now() - parseStart },
+      );
+
+      // Image-density check for PDFs: if average chars/page is very low the document
+      // likely contains image-only pages (scanned pages, figures). Prepend a retrievable
+      // note so the LLM can explain why queries about figures return no visual detail.
+      if (numpages && numpages > 0) {
+        const charsPerPage = Math.round(rawText.length / numpages);
+        if (charsPerPage < LOW_TEXT_DENSITY_CHARS_PER_PAGE) {
+          this.logger.warn({
+            event: 'low_text_density',
+            documentId,
+            numpages,
+            charCount: rawText.length,
+            charsPerPage,
+            threshold: LOW_TEXT_DENSITY_CHARS_PER_PAGE,
+          });
+          documentText =
+            `[Note: This document contains image-heavy pages (avg ${charsPerPage} chars/page). ` +
+            `Visual content such as figures and diagrams cannot be extracted as text ` +
+            `and will not be available for retrieval.]\n\n${documentText}`;
+        }
+      }
 
       // Phase 4: Count tokens and enforce the 50k limit.
       // For PDFs this is the first opportunity to gate on size — parse cost is unavoidable.
       // The warn log here lets us monitor how often large documents are rejected post-parse.
-      const tokenCount = await this.countTokens(rawText);
+      const tokenCount = await this.countTokens(documentText);
       if (tokenCount > MAX_TOKEN_COUNT) {
         this.logger.warn({
           event: 'token_limit_exceeded_post_parse',
@@ -169,7 +222,7 @@ export class DocumentProcessor extends WorkerHost {
 
       // Phase 5: Split at natural semantic boundaries (headings, paragraphs, sentences).
       const chunks = await this.createSplitter(mimeType).createDocuments(
-        [rawText],
+        [documentText],
         [{ source: originalFilename }],
       );
 
@@ -261,20 +314,22 @@ export class DocumentProcessor extends WorkerHost {
   }
 
   /**
-   * Parses a file into a plain-text string suitable for chunking.
-   * PDF extraction uses pdf-parse; all other allowed types (txt, csv, md) are read as UTF-8.
+   * Parses a file into plain text. For PDFs, also returns the page count so
+   * the caller can compute text density and detect image-heavy documents.
    *
    * @param filePath - Absolute path to the file on disk.
    * @param mimeType - MIME type as reported by Multer.
-   * @returns Extracted plain text.
+   * @returns `{ text, numpages? }` — numpages is present for PDFs only.
    */
-  private async parseFile(filePath: string, mimeType: string): Promise<string> {
+  private async parseFile(
+    filePath: string,
+    mimeType: string,
+  ): Promise<{ text: string; numpages?: number }> {
     if (mimeType === 'application/pdf') {
       const buffer = await fs.promises.readFile(filePath);
-      let parsedText: string;
+      let data;
       try {
-        const data = await pdfParse(buffer);
-        parsedText = data.text;
+        data = await pdfParse(buffer);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         // pdf-parse surfaces "No password given" for encrypted PDFs; also guard
@@ -284,14 +339,16 @@ export class DocumentProcessor extends WorkerHost {
         }
         throw new Error('Could not read PDF — file may be corrupted or use an unsupported format.');
       }
+      
       // A successfully-parsed PDF with no text is almost certainly scanned or image-only.
       // Returning empty text here would silently produce zero chunks and mislead the user.
-      if (!parsedText || parsedText.trim().length === 0) {
+      if (!data.text || data.text.trim().length === 0) {
         throw new Error(
           'PDF contains only images or scanned content. Please use a text-based PDF or run OCR first.',
         );
       }
-      return parsedText;
+      
+      return { text: data.text, numpages: data.numpages };
     }
 
     if (PLAIN_TEXT_MIME_TYPES.has(mimeType)) {
@@ -301,7 +358,7 @@ export class DocumentProcessor extends WorkerHost {
       if (content.includes('\x00')) {
         throw new Error('File contains binary data and cannot be processed as text.');
       }
-      return content;
+      return { text: content };
     }
 
     // Defensive fallback — fileFilter in the controller should prevent this path.

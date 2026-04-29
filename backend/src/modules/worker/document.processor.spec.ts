@@ -10,7 +10,7 @@ jest.mock('langfuse', () => ({
 import * as fs from 'fs';
 import { Test, TestingModule } from '@nestjs/testing';
 import { Job } from 'bullmq';
-import { DocumentProcessor } from './document.processor';
+import { DocumentProcessor, postProcessPdfText } from './document.processor';
 import { VectorService } from './vector.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { LangfuseService } from '../observability/langfuse.service';
@@ -23,11 +23,12 @@ jest.mock('fs', () => ({
     readFile: jest.fn(),
     stat: jest.fn(),
     unlink: jest.fn(),
+    stat: jest.fn().mockResolvedValue({ size: 1024 }),
   },
   constants: { R_OK: 4 },
 }));
 
-jest.mock('pdf-parse', () => jest.fn().mockResolvedValue({ text: 'parsed pdf content' }));
+jest.mock('pdf-parse', () => jest.fn().mockResolvedValue({ text: 'parsed pdf content', numpages: 1 }));
 
 // Spy on js-tiktoken so we can control token counts in tests.
 jest.mock('js-tiktoken', () => ({
@@ -91,6 +92,8 @@ describe('DocumentProcessor', () => {
             createTrace: jest.fn().mockReturnValue({ id: 'trace-doc-1', update: jest.fn() }),
             finalizeTrace: jest.fn(),
             recordTraceError: jest.fn(),
+            createSpan: jest.fn().mockReturnValue({ id: 'span-parse-1' }),
+            finalizeSpan: jest.fn(),
           },
         },
       ],
@@ -159,15 +162,18 @@ describe('DocumentProcessor', () => {
   // ---------------------------------------------------------------------------
 
   describe('process — chunking edge cases', () => {
-    it('sets status FAILED when the file produces no extractable text', async () => {
+    it('marks document FAILED when file produces no extractable text', async () => {
       (fs.promises.readFile as jest.Mock).mockResolvedValue('');
 
-      await expect(processor.process(makeJob())).rejects.toThrow(/no text content/i);
+      // Processor rethrows so BullMQ can schedule the retry — test absorbs it.
+      await expect(processor.process(makeJob())).rejects.toThrow('no extractable text');
 
-      const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
-        ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
+      expect(prisma.document.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: DOCUMENT_ID },
+          data: expect.objectContaining({ status: 'FAILED' }),
+        }),
       );
-      expect(failedCall).toBeDefined();
       expect(vectorService.embedAndStore).not.toHaveBeenCalled();
     });
 
@@ -299,6 +305,69 @@ describe('DocumentProcessor', () => {
       );
     });
 
+    it('creates a Langfuse parse span and finalizes it with charCount', async () => {
+      const langfuseService = processor['langfuseService'] as jest.Mocked<LangfuseService>;
+      (fs.promises.readFile as jest.Mock).mockResolvedValue(Buffer.from('%PDF-'));
+
+      await processor.process(makeJob({ mimeType: 'application/pdf' }));
+
+      expect(langfuseService.createSpan).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ name: 'parse' }),
+      );
+      expect(langfuseService.finalizeSpan).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ charCount: expect.any(Number), postProcessed: true }),
+        expect.objectContaining({ latencyMs: expect.any(Number) }),
+      );
+    });
+
+    it('sets postProcessed: false for plain-text files', async () => {
+      const langfuseService = processor['langfuseService'] as jest.Mocked<LangfuseService>;
+
+      await processor.process(makeJob({ mimeType: 'text/plain' }));
+
+      expect(langfuseService.finalizeSpan).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ postProcessed: false }),
+        expect.anything(),
+      );
+    });
+
+    it('logs low_text_density warn and prepends image note when chars/page is below threshold', async () => {
+      const pdfParse = jest.requireMock<jest.Mock>('pdf-parse');
+      // 50 chars across 10 pages = 5 chars/page — well below the 200 threshold
+      pdfParse.mockResolvedValueOnce({ text: 'A'.repeat(50), numpages: 10 });
+      (fs.promises.readFile as jest.Mock).mockResolvedValue(Buffer.from('%PDF-'));
+      const warnSpy = jest.spyOn(
+        (processor as unknown as { logger: { warn: jest.Mock } }).logger, 'warn',
+      ).mockImplementation(() => undefined);
+
+      await processor.process(makeJob({ mimeType: 'application/pdf' }));
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'low_text_density', numpages: 10 }),
+      );
+      const [[chunks]] = (vectorService.embedAndStore as jest.Mock).mock.calls as [[{ pageContent: string }[]]];
+      const allContent = chunks.map((c) => c.pageContent).join(' ');
+      expect(allContent).toContain('[Note:');
+    });
+
+    it('does NOT log low_text_density when density is above threshold', async () => {
+      const pdfParse = jest.requireMock<jest.Mock>('pdf-parse');
+      // 3000 chars on 1 page = well above 200 threshold
+      pdfParse.mockResolvedValueOnce({ text: 'A'.repeat(3000), numpages: 1 });
+      (fs.promises.readFile as jest.Mock).mockResolvedValue(Buffer.from('%PDF-'));
+      const warnSpy = jest.spyOn(
+        (processor as unknown as { logger: { warn: jest.Mock } }).logger, 'warn',
+      ).mockImplementation(() => undefined);
+
+      await processor.process(makeJob({ mimeType: 'application/pdf' }));
+
+      const densityWarns = warnSpy.mock.calls.filter(
+        ([arg]) => (arg as { event?: string }).event === 'low_text_density',
+      );
+      expect(densityWarns).toHaveLength(0);
     it('sets FAILED with a user-friendly message when the PDF is password-protected', async () => {
       const pdfParse = jest.requireMock<jest.Mock>('pdf-parse');
       // pdf-parse throws this exact string for encrypted PDFs — we translate it at the boundary.
@@ -409,5 +478,42 @@ describe('DocumentProcessor', () => {
 
       await expect(processor.onFailed(job, new Error('final failure'))).resolves.toBeUndefined();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// postProcessPdfText — pure function unit tests
+// ---------------------------------------------------------------------------
+
+describe('postProcessPdfText', () => {
+  it('rejoins a mid-dot superscript exponent separated by a newline', () => {
+    expect(postProcessPdfText('2.3·10\n19')).toBe('2.3·10^19');
+  });
+
+  it('rejoins a multiplication-sign superscript exponent separated by a newline', () => {
+    expect(postProcessPdfText('1.4×10\n20')).toBe('1.4×10^20');
+  });
+
+  it('handles Windows-style CRLF line endings', () => {
+    expect(postProcessPdfText('9.6·10\r\n18')).toBe('9.6·10^18');
+  });
+
+  it('fixes multiple occurrences in one pass', () => {
+    const input =
+      'GNMT + RL 2.3·10\n19\n1.4·10\n20\nTransformer (big) 2.3·10\n19\n';
+    const output = postProcessPdfText(input);
+    expect(output).toContain('2.3·10^19');
+    expect(output).toContain('1.4·10^20');
+    expect(output).not.toMatch(/·10\n\d/);
+  });
+
+  it('does not alter text without the superscript pattern', () => {
+    const clean = 'Training took 3.5 days on 8 P100 GPUs.';
+    expect(postProcessPdfText(clean)).toBe(clean);
+  });
+
+  it('does not alter a standalone number on a new line unrelated to ·10', () => {
+    const text = 'Section\n19\nsome content';
+    expect(postProcessPdfText(text)).toBe(text);
   });
 });

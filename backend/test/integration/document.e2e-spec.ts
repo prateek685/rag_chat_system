@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { Reflector } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { DocumentStatus } from '@prisma/client';
 import request from 'supertest';
@@ -44,11 +45,9 @@ describe('DocumentController (integration)', () => {
   };
 
   const mockRedis = {
-    client: {
-      // Return null on every get → cache miss → guard will upsert via mockPrisma.
-      get: jest.fn().mockResolvedValue(null),
-      setex: jest.fn().mockResolvedValue('OK'),
-    },
+    // Return null on every get → cache miss → guard will upsert via mockPrisma.
+    get: jest.fn().mockResolvedValue(null),
+    setex: jest.fn().mockResolvedValue('OK'),
   };
 
   // getAllAndOverride returns false → no route is marked @Public().
@@ -68,6 +67,15 @@ describe('DocumentController (integration)', () => {
         { provide: RedisService, useValue: mockRedis },
         { provide: Reflector, useValue: mockReflector },
         { provide: APP_GUARD, useClass: SessionGuard },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn().mockImplementation((key: string) => {
+              if (key === 'UPLOADS_PATH') return '/tmp/rag-test-uploads';
+              return undefined;
+            }),
+          },
+        },
       ],
     }).compile();
 
@@ -88,8 +96,8 @@ describe('DocumentController (integration)', () => {
     jest.clearAllMocks();
     // Re-arm SessionGuard mocks after clearAllMocks() wipes mockResolvedValue state.
     mockPrisma.session.upsert.mockResolvedValue({ id: SESSION_ID });
-    mockRedis.client.get.mockResolvedValue(null);
-    mockRedis.client.setex.mockResolvedValue('OK');
+    mockRedis.get.mockResolvedValue(null);
+    mockRedis.setex.mockResolvedValue('OK');
     mockReflector.getAllAndOverride.mockReturnValue(false);
   });
 

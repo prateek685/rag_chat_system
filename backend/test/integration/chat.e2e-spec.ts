@@ -68,10 +68,8 @@ describe('ChatController (integration)', () => {
   };
 
   const mockRedis = {
-    client: {
-      get: jest.fn().mockResolvedValue(null),
-      setex: jest.fn().mockResolvedValue('OK'),
-    },
+    get: jest.fn().mockResolvedValue(null),
+    setex: jest.fn().mockResolvedValue('OK'),
   };
 
   const mockReflector = {
@@ -105,8 +103,8 @@ describe('ChatController (integration)', () => {
     jest.clearAllMocks();
     // Re-arm session guard mocks after clearAllMocks().
     mockPrisma.session.upsert.mockResolvedValue({ id: SESSION_ID });
-    mockRedis.client.get.mockResolvedValue(null);
-    mockRedis.client.setex.mockResolvedValue('OK');
+    mockRedis.get.mockResolvedValue(null);
+    mockRedis.setex.mockResolvedValue('OK');
     mockReflector.getAllAndOverride.mockReturnValue(false);
     // Re-arm chat service mocks.
     mockChatService.handleChat.mockImplementation(sseStream);

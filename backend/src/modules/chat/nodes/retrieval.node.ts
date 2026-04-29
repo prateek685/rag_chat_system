@@ -36,7 +36,7 @@ interface RawChunkRow {
  *   • Keyword arm:  top-20 chunks by BM25 ts_rank_cd (GIN tsvector index)
  *   • RRF merge:    FULL OUTER JOIN, score = Σ(1/(60+rank)), top-5
  *
- * Guardrail: if the top chunk's cosine similarity < COSINE_SIMILARITY_THRESHOLD (0.60),
+ * Guardrail: if the top chunk's cosine similarity < COSINE_SIMILARITY_THRESHOLD (0.30),
  * the query has no relevant match — route is set to NO_CONTEXT and the graph ends early.
  * v2: Cohere Rerank 3 will be inserted between this node and GeneratorNode.
  */
@@ -45,6 +45,7 @@ export class RetrievalNodeService {
   private readonly logger = new Logger(RetrievalNodeService.name);
   private readonly openai: OpenAI;
   private readonly embeddingModel: string;
+  private readonly expectedDimensions: number;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -52,6 +53,7 @@ export class RetrievalNodeService {
     configService: ConfigService<EnvConfig, true>,
   ) {
     this.embeddingModel = configService.get('EMBEDDING_MODEL', { infer: true });
+    this.expectedDimensions = configService.get('EMBEDDING_DIMENSIONS', { infer: true });
     this.openai = new OpenAI({
       apiKey: configService.get('OPENROUTER_API_KEY', { infer: true }),
       baseURL: 'https://openrouter.ai/api/v1',
@@ -86,6 +88,7 @@ export class RetrievalNodeService {
 
     let rawRows: RawChunkRow[] = [];
     try {
+
       rawRows = await this.prisma.$queryRaw<RawChunkRow[]>`
         WITH semantic AS (
           SELECT
@@ -216,7 +219,8 @@ export class RetrievalNodeService {
       return { chunks: [], route: 'NO_CONTEXT' };
     }
 
-    // Emit full chunk IDs + scores per design doc — enables retrieval quality analysis in Langfuse.
+    // Emit chunk scores + content previews so retrieval quality is auditable in Langfuse
+    // without having to cross-reference chunk IDs manually.
     this.langfuseService.finalizeSpan(
       span,
       {
@@ -224,6 +228,8 @@ export class RetrievalNodeService {
         topSimilarity,
         chunks: chunks.map((c) => ({
           id: c.id,
+          contentPreview: c.content.slice(0, 300),
+          filename: c.filename,
           cosineSimilarity: c.cosineSimilarity,
           rrfScore: c.rrfScore,
         })),
@@ -281,6 +287,17 @@ export class RetrievalNodeService {
       const embedding = response.data[0]?.embedding;
       if (!Array.isArray(embedding)) {
         throw new Error(`Embedding response missing data for model "${this.embeddingModel}"`);
+      }
+
+      // Dimension mismatch means every pgvector similarity query will fail or silently
+      // return garbage. Throw early with a clear message rather than letting it surface
+      // as a cryptic SQL error or silent retrieval failure.
+      if (embedding.length !== this.expectedDimensions) {
+        throw new Error(
+          `Embedding dimension mismatch: model "${this.embeddingModel}" returned ` +
+          `${embedding.length} dimensions but EMBEDDING_DIMENSIONS is set to ` +
+          `${this.expectedDimensions}. Update the env var to match the model.`,
+        );
       }
 
       const latencyMs = Date.now() - start;

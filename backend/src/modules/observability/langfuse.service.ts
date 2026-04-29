@@ -251,22 +251,43 @@ export class LangfuseService implements OnModuleDestroy {
   }
 
   /**
+   * Submits a programmatic score bound to a specific trace ID.
+   * Used for automated quality signals (faithfulness, citation validity, etc.).
+   * Errors are swallowed — a failed score must not surface to the user.
+   *
+   * @param traceId - Langfuse trace ID to attach the score to.
+   * @param name - Score name (e.g. 'keyword-overlap', 'citation-validity').
+   * @param value - Numeric score (range depends on the metric).
+   * @param comment - Optional human-readable explanation.
+   */
+  scoreTrace(
+    traceId: string,
+    name: string,
+    value: number,
+    comment?: string,
+  ): void {
+    try {
+      // client.score() queues the event synchronously — no Promise returned.
+      this.client.score({ traceId, name, value, comment });
+    } catch (err) {
+      this.logger.warn({
+        event: 'langfuse_score_failed',
+        traceId,
+        name,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
    * Submits a user feedback score bound to a specific trace ID.
    * Called from the feedback endpoint; errors are swallowed so the HTTP 204 still returns.
    *
    * @param traceId - Langfuse trace ID from the original chat response.
    * @param value - 1 (thumbs up) or -1 (thumbs down).
    */
-  async score(traceId: string, value: number): Promise<void> {
-    try {
-      await this.client.score({ traceId, name: 'user-feedback', value });
-    } catch (err) {
-      this.logger.warn({
-        event: 'langfuse_score_failed',
-        traceId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+  score(traceId: string, value: number): void {
+    return this.scoreTrace(traceId, 'user-feedback', value);
   }
 
   /** Flushes any buffered Langfuse events before the process shuts down. */
