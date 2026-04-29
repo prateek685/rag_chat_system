@@ -207,9 +207,13 @@ export function useChat(sessionId: string): UseChatReturn {
   }
 
   function submitFeedback(traceId: string, score: 1 | -1): void {
-    setMessages((prev) =>
-      prev.map((m) => (m.traceId === traceId ? { ...m, feedback: score } : m)),
-    );
+    setMessages((prev) => {
+      const updated = prev.map((m) =>
+        m.traceId === traceId ? { ...m, feedback: score } : m,
+      );
+      persist(updated);
+      return updated;
+    });
     apiSubmitFeedback({ traceId, score }).catch((err: unknown) => {
       console.warn('Feedback submission failed:', err);
     });
