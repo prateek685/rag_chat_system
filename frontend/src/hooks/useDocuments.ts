@@ -48,7 +48,7 @@ export function useDocuments(sessionId: string): UseDocumentsReturn {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [uploadingCount, setUploadingCount] = useState(0);
   const [uploadErrors, setUploadErrors] = useState<UploadError[]>([]);
-  const pollingRef = useRef(new Map<string, ReturnType<typeof setInterval>>());
+  const pollingRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const sessionIdRef = useRef(sessionId);
   // Tracks whether the initial localStorage hydration has completed. Guards the
   // reactive persistence effect from overwriting stored data during the first render
@@ -60,11 +60,8 @@ export function useDocuments(sessionId: string): UseDocumentsReturn {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
 
-  function startPolling(jobId: string, documentId: string): void {
-    // Guard against React StrictMode double-invoke and duplicate resume on refresh
-    if (pollingRef.current.has(jobId)) return;
-
-    const intervalId = setInterval(async () => {
+  function schedulePoll(jobId: string, documentId: string, delay: number): void {
+    const timeoutId = setTimeout(async () => {
       try {
         const s = await getDocumentStatus(jobId);
         setDocuments((prev) =>
@@ -80,15 +77,24 @@ export function useDocuments(sessionId: string): UseDocumentsReturn {
           ),
         );
         if (s.status === 'COMPLETED' || s.status === 'FAILED') {
-          clearInterval(pollingRef.current.get(jobId));
           pollingRef.current.delete(jobId);
+        } else {
+          // Double the delay on each attempt, capped at 30 s
+          schedulePoll(jobId, documentId, Math.min(delay * 2, 30000));
         }
       } catch {
-        // Network error — keep polling; transient failures are recoverable
+        // Network error — retry with the same delay; transient failures are recoverable
+        schedulePoll(jobId, documentId, delay);
       }
-    }, 2000);
+    }, delay);
 
-    pollingRef.current.set(jobId, intervalId);
+    pollingRef.current.set(jobId, timeoutId);
+  }
+
+  function startPolling(jobId: string, documentId: string): void {
+    // Guard against React StrictMode double-invoke and duplicate resume on refresh
+    if (pollingRef.current.has(jobId)) return;
+    schedulePoll(jobId, documentId, 2000);
   }
 
   // Restore document list from localStorage and resume polling for non-terminal docs
@@ -104,7 +110,7 @@ export function useDocuments(sessionId: string): UseDocumentsReturn {
       .forEach((d) => startPolling(d.jobId, d.id));
 
     return () => {
-      pollingRef.current.forEach(clearInterval);
+      pollingRef.current.forEach(clearTimeout);
       pollingRef.current.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -189,7 +195,7 @@ export function useDocuments(sessionId: string): UseDocumentsReturn {
 
     // Stop polling before removing from state to prevent zombie updates
     if (doc.jobId && pollingRef.current.has(doc.jobId)) {
-      clearInterval(pollingRef.current.get(doc.jobId));
+      clearTimeout(pollingRef.current.get(doc.jobId));
       pollingRef.current.delete(doc.jobId);
     }
 

@@ -276,16 +276,16 @@ describe('useDocuments', () => {
         result.current.uploadFiles([makeFile('doc.pdf', 'application/pdf')]);
       });
 
-      // First poll tick
+      // First poll tick at 2 s (initial delay)
       await act(async () => {
         jest.advanceTimersByTime(2100);
       });
 
       expect(result.current.documents.some((d) => d.status === 'PROCESSING')).toBe(true);
 
-      // Second poll tick
+      // Second poll tick at 4 s (exponential backoff doubles the delay)
       await act(async () => {
-        jest.advanceTimersByTime(2100);
+        jest.advanceTimersByTime(4100);
       });
 
       await waitFor(() => {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { BookOpenIcon, XIcon } from 'lucide-react';
 import type { Citation } from '@/lib/types';
@@ -12,13 +12,24 @@ interface CitationSidePanelProps {
 /**
  * Sources button + right-side panel per message.
  * Rendered via portal directly on <body> — no overlay, no background blur.
- * Each message gets its own independent instance.
+ * Focus moves to the Close button on open and returns to the Sources button on close.
  */
 export function CitationSidePanel({ citations }: CitationSidePanelProps) {
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const sourcesButtonRef = useRef<HTMLButtonElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => { setMounted(true); }, []);
+
+  // Move focus into the panel when it opens; return focus when it closes.
+  useEffect(() => {
+    if (open) {
+      closeButtonRef.current?.focus();
+    } else {
+      sourcesButtonRef.current?.focus();
+    }
+  }, [open]);
 
   // Close on Escape key
   useEffect(() => {
@@ -32,7 +43,8 @@ export function CitationSidePanel({ citations }: CitationSidePanelProps) {
 
   const panel = (
     <div
-      role="complementary"
+      role="dialog"
+      aria-modal="true"
       aria-label="Sources panel"
       className="fixed inset-y-0 right-0 z-50 flex w-[340px] flex-col
                  border-l border-border bg-popover text-popover-foreground shadow-2xl"
@@ -41,6 +53,7 @@ export function CitationSidePanel({ citations }: CitationSidePanelProps) {
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <h2 className="text-sm font-semibold text-foreground">Sources</h2>
         <button
+          ref={closeButtonRef}
           onClick={() => setOpen(false)}
           aria-label="Close sources"
           className="rounded-md p-1 text-muted-foreground
@@ -59,8 +72,8 @@ export function CitationSidePanel({ citations }: CitationSidePanelProps) {
           >
             <span
               className="mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center
-                         rounded bg-blue-100 text-[11px] font-bold text-blue-700
-                         dark:bg-blue-900/40 dark:text-blue-300"
+                         rounded text-[11px] font-bold text-white"
+              style={{ background: 'linear-gradient(135deg, oklch(0.35 0.15 220) 0%, oklch(0.58 0.13 220) 100%)' }}
             >
               {c.number}
             </span>
@@ -86,6 +99,7 @@ export function CitationSidePanel({ citations }: CitationSidePanelProps) {
   return (
     <>
       <button
+        ref={sourcesButtonRef}
         onClick={() => setOpen(true)}
         className="inline-flex items-center gap-1.5 rounded-md px-2 py-1
                    text-xs font-medium text-muted-foreground
