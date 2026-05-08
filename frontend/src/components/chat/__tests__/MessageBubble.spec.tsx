@@ -14,7 +14,7 @@
  */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import { MessageBubble } from '../MessageBubble';
+import { MessageBubble, sanitizeSchema } from '../MessageBubble';
 import type { Message } from '@/lib/types';
 
 jest.mock('../CitationPill', () => ({
@@ -241,28 +241,16 @@ describe('MessageBubble — timestamps', () => {
 });
 
 describe('MessageBubble — sanitize schema configuration', () => {
-  it('rehype-sanitize defaultSchema does NOT include script, iframe, or img in tagNames', () => {
-    // Import the mock schema (mirrors the real defaultSchema structure)
-    const { defaultSchema } = require('rehype-sanitize') as {
-      defaultSchema: { tagNames: string[]; attributes: Record<string, unknown> };
-    };
-
-    expect(defaultSchema.tagNames).not.toContain('script');
-    expect(defaultSchema.tagNames).not.toContain('iframe');
-    // img is not in the default schema tagNames — the real one also excludes it by default
-    expect(defaultSchema.tagNames).not.toContain('img');
+  it('production sanitizeSchema includes cite in tagNames', () => {
+    expect(sanitizeSchema.tagNames).toContain('cite');
   });
 
-  it('the production sanitize schema adds cite to the allowlist', () => {
-    // MessageBubble merges defaultSchema.tagNames with ['cite'].
-    // Verify that cite is explicitly added (it is NOT in the defaultSchema).
-    const { defaultSchema } = require('rehype-sanitize') as {
-      defaultSchema: { tagNames: string[] };
-    };
+  it('production sanitizeSchema allows dataN attribute on cite elements', () => {
+    expect(sanitizeSchema.attributes?.cite).toContain('dataN');
+  });
 
-    expect(defaultSchema.tagNames).not.toContain('cite');
-    // The production schema adds it — tested here at the contract level.
-    const productionTagNames = [...defaultSchema.tagNames, 'cite'];
-    expect(productionTagNames).toContain('cite');
+  it('production sanitizeSchema excludes dangerous tags', () => {
+    expect(sanitizeSchema.tagNames).not.toContain('script');
+    expect(sanitizeSchema.tagNames).not.toContain('iframe');
   });
 });

@@ -149,6 +149,16 @@ describe('ChatInput — send behaviour', () => {
     expect(defaultProps.onSend).not.toHaveBeenCalled();
   });
 
+  it('handleSend early-returns on Enter when isStreaming is true', () => {
+    // Verifies the isStreaming guard in handleSend() — not just the UI button absence.
+    // The textarea accepts input while streaming, so we can exercise the code-path directly.
+    render(<ChatInput {...defaultProps} isStreaming={true} hasReadyDocs={true} />);
+    const textarea = screen.getByRole('textbox');
+    fireEvent.change(textarea, { target: { value: 'hello' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+    expect(defaultProps.onSend).not.toHaveBeenCalled();
+  });
+
   it('send button is disabled when input is empty', () => {
     render(<ChatInput {...defaultProps} />);
     expect(screen.getByRole('button', { name: /send message/i })).toBeDisabled();

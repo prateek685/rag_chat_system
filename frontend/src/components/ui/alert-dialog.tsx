@@ -36,6 +36,8 @@ export function AlertDialog({
 
   useEffect(() => {
     if (!open) return;
+    // Capture the element that triggered the dialog so focus can be returned on close.
+    const previouslyFocused = document.activeElement as HTMLElement | null;
     cancelRef.current?.focus();
 
     const handler = (e: KeyboardEvent) => {
@@ -54,7 +56,10 @@ export function AlertDialog({
       }
     };
     document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    return () => {
+      document.removeEventListener('keydown', handler);
+      previouslyFocused?.focus();
+    };
   }, [open, onCancel]);
 
   if (!open) return null;

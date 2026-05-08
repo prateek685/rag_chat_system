@@ -194,6 +194,15 @@
   100% { transform: scale(2.2); opacity: 0; }
 }
 
+/* ─── KaTeX responsive math ─────────────────────────────────────────────────── */
+/* Display-math blocks scroll horizontally on narrow viewports instead of       */
+/* expanding the card to a fixed typeset width (same pattern as ChatGPT/Claude) */
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 0.25rem; /* keeps descenders visible when scrollbar appears  */
+}
+
 /* ─── Reduce Motion ─────────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

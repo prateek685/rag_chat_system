@@ -47,5 +47,6 @@ export interface DocumentStatusResponse {
 
 export interface FeedbackPayload {
   traceId: string;
-  score: 1 | -1;
+  /** 1 = thumbs up, -1 = thumbs down, 0 = clear (overwrites previous score in Langfuse). */
+  score: 1 | -1 | 0;
 }

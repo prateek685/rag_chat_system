@@ -305,13 +305,13 @@ export class ChatService {
 
   /**
    * Forwards a user feedback score to Langfuse.
-   * On negative feedback (score = -1), invalidates the cached response so
-   * the wrong answer is not served again to the same session.
+   * score 0 overwrites a previous 1/-1 with a neutral value (user cleared feedback).
+   * score -1 additionally invalidates cached responses for that trace.
    *
-   * @param dto - Feedback payload with traceId and score (1 | -1).
+   * @param dto - Feedback payload with traceId and score (1 | -1 | 0).
    */
   async handleFeedback(dto: FeedbackDto): Promise<void> {
-    // Record score in Langfuse regardless of cache outcome.
+    // Record score in Langfuse — 0 overwrites any previously recorded 1/-1.
     await this.langfuseService.score(dto.traceId, dto.score);
 
     // Invalidate caches on thumbs-down to prevent the wrong answer from being served again.

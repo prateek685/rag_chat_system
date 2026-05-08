@@ -63,6 +63,8 @@ export function Header({
                 size="icon"
                 className="hidden md:flex"
                 onClick={onToggleDesktopSidebar}
+                aria-expanded={desktopSidebarOpen}
+                aria-controls="desktop-sidebar"
               />
             }
           >

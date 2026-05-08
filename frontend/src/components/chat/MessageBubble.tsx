@@ -3,7 +3,10 @@
 import { memo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeRaw from 'rehype-raw';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
+import rehypeKatex from 'rehype-katex';
 import { cn } from '@/lib/utils';
 import type { Message } from '@/lib/types';
 import { CitationPill } from './CitationPill';
@@ -19,31 +22,62 @@ interface MessageBubbleProps {
 }
 
 /**
- * Sanitize schema that allows only <cite data-n> elements — all other
- * raw HTML (scripts, img onerror, iframes, etc.) is stripped.
- * This closes the XSS hole that existed when rehype-raw was used.
+ * Sanitize schema that allows <cite data-n> (inline citations) and the
+ * SVG/span elements emitted by rehype-katex for math rendering.
+ * All unsafe HTML (scripts, img onerror, iframes, event handlers) is stripped.
  */
-const sanitizeSchema = {
+export const sanitizeSchema = {
   ...defaultSchema,
-  tagNames: [...(defaultSchema.tagNames ?? []), 'cite'],
+  tagNames: [
+    ...(defaultSchema.tagNames ?? []),
+    'cite',
+    // KaTeX output tags
+    'math', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub', 'mfrac',
+    'msubsup', 'munder', 'mover', 'munderover', 'mtable', 'mtr',
+    'mtd', 'mtext', 'mspace', 'menclose', 'annotation', 'semantics',
+  ],
   attributes: {
     ...defaultSchema.attributes,
     cite: ['dataN'],
+    // Allow all attributes on math elements (KaTeX needs xmlns, display, etc.)
+    '*': [...(defaultSchema.attributes?.['*'] ?? []), 'className', 'style', 'xmlns', 'display'],
+    math: ['xmlns', 'display'],
+    annotation: ['encoding'],
   },
 };
 
-/**
- * Converts [Source N] markers into <cite data-n="N"></cite> elements so a single
- * ReactMarkdown pass can render the full document (no splitting) while still
- * embedding inline citation badges exactly where the LLM placed them.
- */
 // Accept both ASCII [Source N] and full-width 【Source N】 — some models emit the latter.
 const SOURCE_CITE_RE = /[\[【]Source\s+(\d+)[\]】]/g;
 const SOURCE_STRIP_RE = /[\[【]Source\s+\d+[\]】]/g;
 
+// Matches a line whose only non-whitespace content is one or more citation markers.
+// These are duplicates the LLM places below the sentence that already cites inline.
+const STANDALONE_CITE_LINE_RE = /^[ \t]*(?:(?:[-*]|\d+\.)[ \t]+)?(?:[\[【]Source\s+\d+[\]】][ \t]*)+(?:\r?\n|$)/gm;
+
+/**
+ * Prepares AI response text for ReactMarkdown:
+ *  1. Strips citation markers that appear alone on their own line (LLM duplicates).
+ *  2. Normalises LaTeX display math \[...\] → $$...$$ for remark-math.
+ *  3. Normalises LaTeX inline math \(...\) → $...$ for remark-math.
+ *  4. Converts remaining inline [Source N] markers to <cite data-n="N"> elements.
+ */
 function prepareContent(content: string): string {
+  let out = content;
+
+  // 1. Remove lines that are only citation markers (duplicates from the LLM)
+  out = out.replace(STANDALONE_CITE_LINE_RE, '');
+
+  // 2. Display math: \[...\]  →  $$...$$
+  out = out.replace(/\\\[([^]*?)\\\]/g, (_m, math: string) => `$$${math}$$`);
+
+  // 3. Inline math: \(...\)  →  $...$
+  out = out.replace(/\\\(([^]*?)\\\)/g, (_m, math: string) => `$${math}$`);
+
+  // 4. Inline citation markers → <cite> elements
   SOURCE_CITE_RE.lastIndex = 0;
-  return content.replace(SOURCE_CITE_RE, '<cite data-n="$1"></cite>');
+  out = out.replace(SOURCE_CITE_RE, '<cite data-n="$1"></cite>');
+
+  return out;
 }
 
 function formatTimestamp(iso: string): string {
@@ -52,7 +86,7 @@ function formatTimestamp(iso: string): string {
   const diffMin = Math.floor((now.getTime() - date.getTime()) / 60000);
   if (diffMin < 1) return 'just now';
   if (diffMin < 60) return `${diffMin}m ago`;
-  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const time = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
   if (date.toDateString() === now.toDateString()) return time;
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
@@ -113,7 +147,7 @@ function MessageBubbleInner({
 
   return (
     <div
-      className="flex flex-col px-4 py-1.5"
+      className="flex flex-col px-4 py-1.5 outline-none"
       style={{ animation: 'message-in 0.2s ease-out both' }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -122,7 +156,8 @@ function MessageBubbleInner({
         {/* Response prose with inline citation badges */}
         <div
           className={cn(
-            'rounded-2xl rounded-bl-sm bg-card px-4 py-3 text-sm',
+            'rounded-2xl rounded-bl-sm bg-card px-4 py-3 text-sm outline-none',
+            'border border-border/50',
             'prose prose-sm dark:prose-invert max-w-none',
             'prose-p:my-1 prose-p:leading-relaxed',
             'prose-headings:font-semibold',
@@ -137,8 +172,8 @@ function MessageBubbleInner({
           }}
         >
           <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[[rehypeSanitize, sanitizeSchema]]}
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[rehypeRaw, rehypeKatex, [rehypeSanitize, sanitizeSchema]]}
             components={{
               // Render <cite data-n="N"> as an inline CitationPill with tooltip.
               cite: ({ node }) => {

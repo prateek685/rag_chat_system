@@ -15,7 +15,10 @@ const config = {
     // which tests the schema directly without a browser render pipeline.
     '^react-markdown$': '<rootDir>/src/__mocks__/react-markdown.js',
     '^remark-gfm$': '<rootDir>/src/__mocks__/remark-gfm.js',
+    '^remark-math$': '<rootDir>/src/__mocks__/remark-math.js',
+    '^rehype-katex$': '<rootDir>/src/__mocks__/rehype-katex.js',
     '^rehype-sanitize$': '<rootDir>/src/__mocks__/rehype-sanitize.js',
+    '^rehype-raw$': '<rootDir>/src/__mocks__/rehype-raw.js',
   },
   modulePathIgnorePatterns: ['<rootDir>/.next/'],
   testMatch: ['**/__tests__/**/*.spec.ts', '**/__tests__/**/*.spec.tsx'],

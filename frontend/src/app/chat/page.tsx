@@ -61,8 +61,12 @@ export default function ChatPage() {
         document.documentElement.classList.toggle('dark', dark);
       };
       apply(mq.matches);
-      // React to OS theme changes when no stored preference exists
-      const listener = (e: MediaQueryListEvent) => apply(e.matches);
+      // Only follow OS changes while user has no explicit preference stored.
+      // Once toggleDark() writes 'light'/'dark', this guard prevents the listener
+      // from overriding that choice on the next OS theme change.
+      const listener = (e: MediaQueryListEvent) => {
+        if (!readStorage<string>(THEME_KEY, '')) apply(e.matches);
+      };
       mq.addEventListener('change', listener);
       return () => mq.removeEventListener('change', listener);
     }
@@ -117,11 +121,13 @@ export default function ChatPage() {
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {/* Desktop sidebar — animated width collapse */}
           <div
+            id="desktop-sidebar"
             className="hidden shrink-0 overflow-hidden md:block"
             style={{
               width: desktopSidebarOpen ? '288px' : '0px',
               transition: 'width 280ms cubic-bezier(0.4, 0, 0.2, 1)',
             }}
+            inert={!desktopSidebarOpen}
           >
             <Sidebar {...sidebarProps} onUpload={uploadFiles} />
           </div>

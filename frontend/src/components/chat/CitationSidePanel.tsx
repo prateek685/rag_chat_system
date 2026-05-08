@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { BookOpenIcon, XIcon } from 'lucide-react';
 import type { Citation } from '@/lib/types';
@@ -9,24 +9,61 @@ interface CitationSidePanelProps {
   citations: Citation[];
 }
 
+/** Custom event name used to coordinate mutual exclusion across panel instances. */
+const PANEL_OPEN_EVENT = 'citation-panel-open';
+
 /**
  * Sources button + right-side panel per message.
  * Rendered via portal directly on <body> — no overlay, no background blur.
  * Focus moves to the Close button on open and returns to the Sources button on close.
+ *
+ * Broadcasts PANEL_OPEN_EVENT when it opens so sibling instances close themselves,
+ * ensuring at most one panel is visible at a time.
  */
 export function CitationSidePanel({ citations }: CitationSidePanelProps) {
+  const panelId = useId();
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const sourcesButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  // Track whether the panel has ever been opened — prevents focus from being
+  // stolen during initial render when open starts as false.
+  const hasOpenedRef = useRef(false);
+  // Set to true when a sibling panel displaces this one — suppresses focus
+  // return to this panel's trigger (focus already moved to the sibling's trigger).
+  const suppressFocusReturnRef = useRef(false);
 
   useEffect(() => { setMounted(true); }, []);
 
-  // Move focus into the panel when it opens; return focus when it closes.
+  // When this panel opens, broadcast to all sibling panels to close.
+  useEffect(() => {
+    if (!open) return;
+    document.dispatchEvent(
+      new CustomEvent<{ panelId: string }>(PANEL_OPEN_EVENT, { detail: { panelId } }),
+    );
+  }, [open, panelId]);
+
+  // Listen for another panel opening and close self without stealing focus back.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { panelId: activePanelId } = (e as CustomEvent<{ panelId: string }>).detail;
+      if (activePanelId !== panelId && open) {
+        suppressFocusReturnRef.current = true;
+        setOpen(false);
+      }
+    };
+    document.addEventListener(PANEL_OPEN_EVENT, handler);
+    return () => document.removeEventListener(PANEL_OPEN_EVENT, handler);
+  }, [open, panelId]);
+
+  // Move focus into the panel when it opens; return to the trigger only after
+  // a genuine close (not on initial mount, and not when displaced by a sibling).
   useEffect(() => {
     if (open) {
+      hasOpenedRef.current = true;
+      suppressFocusReturnRef.current = false;
       closeButtonRef.current?.focus();
-    } else {
+    } else if (hasOpenedRef.current && !suppressFocusReturnRef.current) {
       sourcesButtonRef.current?.focus();
     }
   }, [open]);
@@ -43,8 +80,7 @@ export function CitationSidePanel({ citations }: CitationSidePanelProps) {
 
   const panel = (
     <div
-      role="dialog"
-      aria-modal="true"
+      role="complementary"
       aria-label="Sources panel"
       className="fixed inset-y-0 right-0 z-50 flex w-[340px] flex-col
                  border-l border-border bg-popover text-popover-foreground shadow-2xl"

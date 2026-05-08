@@ -222,12 +222,11 @@ export function useChat(sessionId: string): UseChatReturn {
       }
       return updated;
     });
-    // Score 0 means "clear feedback" — no API call needed.
-    if (score !== 0) {
-      apiSubmitFeedback({ traceId, score }).catch((err: unknown) => {
-        console.warn('Feedback submission failed:', err);
-      });
-    }
+    // Always sync to the backend so Langfuse reflects the current state.
+    // score 0 overwrites any previously recorded 1/-1 with a neutral value.
+    apiSubmitFeedback({ traceId, score }).catch((err: unknown) => {
+      console.warn('Feedback submission failed:', err);
+    });
   }
 
   return {

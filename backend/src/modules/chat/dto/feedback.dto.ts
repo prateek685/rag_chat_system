@@ -7,7 +7,7 @@ export class FeedbackDto {
   @IsNotEmpty()
   traceId!: string;
 
-  @ApiProperty({ description: 'User feedback score: 1 = thumbs up, -1 = thumbs down', enum: [1, -1] })
-  @IsIn([1, -1])
-  score!: 1 | -1;
+  @ApiProperty({ description: 'User feedback score: 1 = thumbs up, -1 = thumbs down, 0 = cleared', enum: [1, -1, 0] })
+  @IsIn([1, -1, 0])
+  score!: 1 | -1 | 0;
 }
