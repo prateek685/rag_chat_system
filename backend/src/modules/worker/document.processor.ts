@@ -56,16 +56,25 @@ const PLAIN_TEXT_MIME_TYPES = new Set<string>([
 
 /**
  * Fixes PDF text-extraction artifacts produced by pdf-parse:
+ * - C0 control characters substituted for math symbols (pdf-parse maps certain glyph
+ *   runs to STX/EOT/ENQ because they fall outside the standard font encoding table).
+ *    (STX) → '='  e.g. "b = -0.85" appears as "b  -0.85"
+ *    (EOT) → '<'  e.g. "p < .001"  appears as "p  .001"
+ *    (ENQ) → '-'  e.g. "b = -0.85" appears as "b  0.85"
  * - Superscript exponents land on their own line because PDF superscripts occupy a separate
  *   character-run that pdf-parse emits as a newline. E.g. "2.3·10\n19" → "2.3·10^19".
  *
  * Exported for unit testing. Apply only to PDF-extracted text.
  *
  * @param text - Raw text from pdf-parse.
- * @returns Post-processed text with superscript exponents rejoined.
+ * @returns Post-processed text with artifacts corrected.
  */
 export function postProcessPdfText(text: string): string {
-  return text.replace(/([·×]10)\r?\n(\d{1,3})\b/g, '$1^$2');
+  return text
+    .replace(//g, '=')
+    .replace(//g, '<')
+    .replace(//g, '-')
+    .replace(/([·×]10)\r?\n(\d{1,3})\b/g, '$1^$2');
 }
 /**
 * Thrown when pdf-parse encounters an encrypted/password-protected PDF.
@@ -79,13 +88,14 @@ class PasswordProtectedPdfError extends Error {
     );
     this.name = 'PasswordProtectedPdfError';
   }
-
+}
 /**
  * BullMQ worker for the document-processing queue.
  * Orchestrates the full pipeline: validate → parse → chunk → embed → store → cleanup.
  * On any failure the document status is updated to FAILED before rethrowing
  * so the status endpoint reflects the failure in real time.
- *
+  */
+/**
  * lockDuration: worker holds the job lock for 30s, renewed every 15s while active.
  * maxStalledCount: job moves to failed after 2 stalls — prevents infinite crash loops.
  */
@@ -229,7 +239,7 @@ export class DocumentProcessor extends WorkerHost {
       // Guard: an empty PDF or all-whitespace file produces zero chunks.
       // Marking it COMPLETED would mislead the user — all retrieval queries would return NO_CONTEXT.
       if (chunks.length === 0) {
-        throw new Error('No text content found. The file may be empty or contain only whitespace.');
+        throw new Error('File contains no extractable text — it may be empty or contain only whitespace.');
       }
 
       // Phase 6 + 7: Batch-embed all chunks in one OpenAI call, then bulk-insert.
@@ -339,7 +349,7 @@ export class DocumentProcessor extends WorkerHost {
         }
         throw new Error('Could not read PDF — file may be corrupted or use an unsupported format.');
       }
-      
+
       // A successfully-parsed PDF with no text is almost certainly scanned or image-only.
       // Returning empty text here would silently produce zero chunks and mislead the user.
       if (!data.text || data.text.trim().length === 0) {
@@ -347,7 +357,7 @@ export class DocumentProcessor extends WorkerHost {
           'PDF contains only images or scanned content. Please use a text-based PDF or run OCR first.',
         );
       }
-      
+
       return { text: data.text, numpages: data.numpages };
     }
 

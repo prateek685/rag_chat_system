@@ -185,6 +185,8 @@ describe('ChatService', () => {
         slidingWindow: [
           { role: 'user', content: 'Hello' },
           { role: 'assistant', content: 'Hi there!' },
+          // Current query is always the last entry: persisted to DB before loadSessionContext runs.
+          { role: 'user', content: 'What is the capital of France?' },
         ],
         runningSummary: null,
         fullResponse: '',
@@ -227,6 +229,8 @@ describe('ChatService', () => {
           { role: 'user', content: 'First question' },
           { role: 'system', content: '[SYSTEM DIRECTIVE: Document deleted]' },
           { role: 'assistant', content: 'First answer' },
+          // Current query is always the last entry: persisted to DB before loadSessionContext runs.
+          { role: 'user', content: 'Follow-up?' },
         ],
         runningSummary: null,
         fullResponse: '',

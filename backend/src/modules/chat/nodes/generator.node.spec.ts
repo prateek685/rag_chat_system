@@ -244,5 +244,76 @@ describe('GeneratorNodeService', () => {
       expect(score).toBeGreaterThanOrEqual(0);
       expect(score).toBeLessThanOrEqual(1);
     });
+
+    it('emits a low keyword-overlap score when model claims data is absent despite it being in the chunk', async () => {
+      // Reproduces the failure mode from trace 0fb23d8c: the chunk contains the answer in
+      // PDF-merged format but the model returns a "not found" response. The keyword-overlap
+      // score must be < 0.30 so the warn log fires and the Langfuse dashboard surfaces it.
+      const notFoundResponse =
+        'The provided excerpts cannot give those specific figures because numeric values are absent.';
+      mockCreate.mockResolvedValueOnce(makeStream([notFoundResponse]));
+      const pdfTableChunk = {
+        id: 'c1',
+        content: 'Table shows transformer architecture variations.\nbase65122048864640.10.1100K4.9225.865\n(B)\n165.1625.158\n325.0125.460',
+        documentId: 'd1', filename: '1706.03762v7.pdf', rrfScore: 0.016, cosineSimilarity: 0.525, metadata: null,
+      };
+
+      await service.execute(
+        makeState({ route: 'RAG_QUERY', chunks: [pdfTableChunk], traceId: 'trace-pdf-table' }),
+        jest.fn(),
+        null,
+      );
+
+      const score = (langfuse.scoreTrace as jest.Mock).mock.calls[0][2] as number;
+      expect(score).toBeLessThan(0.30);
+    });
+
+    it('still returns the model response when faithfulness score is low — scoring is observability-only, not a gate', async () => {
+      const notFoundResponse =
+        'The provided excerpts cannot give those specific figures because numeric values are absent.';
+      mockCreate.mockResolvedValueOnce(makeStream([notFoundResponse]));
+      const pdfTableChunk = {
+        id: 'c1',
+        content: 'Table shows transformer architecture variations.\nbase65122048864640.10.1100K4.9225.865\n(B)\n165.1625.158',
+        documentId: 'd1', filename: '1706.03762v7.pdf', rrfScore: 0.016, cosineSimilarity: 0.525, metadata: null,
+      };
+
+      const result = await service.execute(
+        makeState({ route: 'RAG_QUERY', chunks: [pdfTableChunk] }),
+        jest.fn(),
+        null,
+      );
+
+      expect(result.fullResponse).toBe(notFoundResponse);
+    });
+  });
+
+  describe('execute() — citation normalisation', () => {
+    it('replaces fullwidth 【Source N】 brackets with ASCII [Source N] in fullResponse', async () => {
+      mockCreate.mockResolvedValueOnce(makeStream(['Answer【Source 1】and【Source 2】.']));
+
+      const result = await service.execute(makeState(), jest.fn(), null);
+
+      expect(result.fullResponse).toBe('Answer[Source 1]and[Source 2].');
+    });
+
+    it('leaves already-correct [Source N] brackets unchanged', async () => {
+      mockCreate.mockResolvedValueOnce(makeStream(['Good answer [Source 1].']));
+
+      const result = await service.execute(makeState(), jest.fn(), null);
+
+      expect(result.fullResponse).toBe('Good answer [Source 1].');
+    });
+
+    it('passes normalised text to finalizeGeneration output', async () => {
+      mockCreate.mockResolvedValueOnce(makeStream(['text【Source 3】end']));
+
+      await service.execute(makeState(), jest.fn(), null);
+
+      expect(langfuse.finalizeGeneration).toHaveBeenCalledWith(
+        mockGeneration,
+        expect.objectContaining({ output: 'text[Source 3]end' }),
+      );
+    });
   });
 });
