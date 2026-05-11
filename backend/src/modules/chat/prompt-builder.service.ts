@@ -28,8 +28,16 @@ export class PromptBuilderService {
     const messages: BaseMessage[] = [];
 
     // 1. Sliding window conversation history (chronological order).
-    //    Ghost messages (role='system') are internal pipeline directives — never forwarded.
-    for (const msg of state.slidingWindow) {
+    //    The user message is persisted to the DB before the graph runs, so the current query
+    //    is always the last entry in the sliding window. Drop it here — step 3 adds it
+    //    explicitly after the context block, which is the correct Safety Caboose order.
+    //    Also trim any leading assistant turns: the DB fetch window can start mid-conversation
+    //    with an assistant message, producing an invalid sequence for the LLM.
+    const historySlice = state.slidingWindow.slice(0, -1);
+    const firstUserIdx = historySlice.findIndex((m) => m.role === 'user');
+    const history = firstUserIdx >= 0 ? historySlice.slice(firstUserIdx) : [];
+
+    for (const msg of history) {
       if (msg.role === 'user') {
         messages.push(new HumanMessage(msg.content));
       } else if (msg.role === 'assistant') {

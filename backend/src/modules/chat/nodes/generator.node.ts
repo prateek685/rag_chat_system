@@ -14,6 +14,16 @@ import { RAGState, WriteTokenFn } from '../types/rag-state.types';
 const TTFT_BUDGET_MS = 800;
 
 /**
+ * Normalises citation brackets emitted by free-tier models that prefer CJK fullwidth
+ * brackets (【Source N】) despite the system prompt requiring ASCII [Source N].
+ * Applied to the complete response after streaming so the persisted text is always clean.
+ * The live stream tokens are unaffected — normalisation happens before DB/Langfuse writes.
+ */
+function normalizeCitations(text: string): string {
+  return text.replace(/【(Source \d+)】/g, '[$1]');
+}
+
+/**
  * Keyword-overlap score below this value triggers a warn log.
  * Does not block the response — faithfulness scoring is observability-only.
  * Calibrated at 0.30: typical well-grounded responses score 0.35–0.70;
@@ -143,6 +153,8 @@ export class GeneratorNodeService {
     }
 
     const latencyMs = Date.now() - start;
+
+    fullResponse = normalizeCitations(fullResponse);
 
     // Keyword-overlap faithfulness signal — only meaningful for RAG_QUERY with retrieved chunks.
     // Logs to Langfuse as a trace score so average faithfulness is visible on the dashboard.

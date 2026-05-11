@@ -368,152 +368,176 @@ describe('DocumentProcessor', () => {
         ([arg]) => (arg as { event?: string }).event === 'low_text_density',
       );
       expect(densityWarns).toHaveLength(0);
+    });
+
     it('sets FAILED with a user-friendly message when the PDF is password-protected', async () => {
-      const pdfParse = jest.requireMock<jest.Mock>('pdf-parse');
-      // pdf-parse throws this exact string for encrypted PDFs — we translate it at the boundary.
-      pdfParse.mockRejectedValueOnce(new Error('No password given'));
-      (fs.promises.readFile as jest.Mock).mockResolvedValue(Buffer.from('%PDF-'));
-      (prisma.document.update as jest.Mock).mockImplementation(({ data }: { data: { status: string } }) =>
-        Promise.resolve(data.status === 'PROCESSING' ? { sessionId: SESSION_ID } : {}),
-      );
+        const pdfParse = jest.requireMock<jest.Mock>('pdf-parse');
+        // pdf-parse throws this exact string for encrypted PDFs — we translate it at the boundary.
+        pdfParse.mockRejectedValueOnce(new Error('No password given'));
+        (fs.promises.readFile as jest.Mock).mockResolvedValue(Buffer.from('%PDF-'));
+        (prisma.document.update as jest.Mock).mockImplementation(({ data }: { data: { status: string } }) =>
+          Promise.resolve(data.status === 'PROCESSING' ? { sessionId: SESSION_ID } : {}),
+        );
 
-      await expect(processor.process(makeJob({ mimeType: 'application/pdf' }))).rejects.toThrow();
+        await expect(processor.process(makeJob({ mimeType: 'application/pdf' }))).rejects.toThrow();
 
-      const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
-        ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
-      );
-      expect(failedCall).toBeDefined();
-      expect(failedCall[0].data.errorMessage).toMatch(/password-protected/i);
+        const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
+          ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
+        );
+        expect(failedCall).toBeDefined();
+        expect(failedCall[0].data.errorMessage).toMatch(/password-protected/i);
+      });
+
+      it('sets FAILED with a user-friendly message when the PDF is corrupted or unreadable', async () => {
+        const pdfParse = jest.requireMock<jest.Mock>('pdf-parse');
+        pdfParse.mockRejectedValueOnce(new Error('Invalid PDF structure'));
+        (fs.promises.readFile as jest.Mock).mockResolvedValue(Buffer.from('%PDF-'));
+        (prisma.document.update as jest.Mock).mockImplementation(({ data }: { data: { status: string } }) =>
+          Promise.resolve(data.status === 'PROCESSING' ? { sessionId: SESSION_ID } : {}),
+        );
+
+        await expect(processor.process(makeJob({ mimeType: 'application/pdf' }))).rejects.toThrow();
+
+        const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
+          ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
+        );
+        expect(failedCall).toBeDefined();
+        expect(failedCall[0].data.errorMessage).toMatch(/corrupted/i);
+      });
+
+      it('sets FAILED with an image-only message when the PDF parses but yields no text', async () => {
+        const pdfParse = jest.requireMock<jest.Mock>('pdf-parse');
+        pdfParse.mockResolvedValueOnce({ text: '   ' }); // whitespace-only — scanned/image PDF
+        (fs.promises.readFile as jest.Mock).mockResolvedValue(Buffer.from('%PDF-'));
+        (prisma.document.update as jest.Mock).mockImplementation(({ data }: { data: { status: string } }) =>
+          Promise.resolve(data.status === 'PROCESSING' ? { sessionId: SESSION_ID } : {}),
+        );
+
+        await expect(processor.process(makeJob({ mimeType: 'application/pdf' }))).rejects.toThrow();
+
+        const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
+          ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
+        );
+        expect(failedCall).toBeDefined();
+        expect(failedCall[0].data.errorMessage).toMatch(/images or scanned/i);
+      });
+
+      it('sets FAILED with a binary-data message when a plain-text file contains null bytes', async () => {
+        (fs.promises.readFile as jest.Mock).mockResolvedValue('header,value\x00\x01\x02garbage');
+        (prisma.document.update as jest.Mock).mockImplementation(({ data }: { data: { status: string } }) =>
+          Promise.resolve(data.status === 'PROCESSING' ? { sessionId: SESSION_ID } : {}),
+        );
+
+        await expect(processor.process(makeJob({ mimeType: 'text/csv' }))).rejects.toThrow();
+
+        const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
+          ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
+        );
+        expect(failedCall).toBeDefined();
+        expect(failedCall[0].data.errorMessage).toMatch(/binary data/i);
+      });
     });
 
-    it('sets FAILED with a user-friendly message when the PDF is corrupted or unreadable', async () => {
-      const pdfParse = jest.requireMock<jest.Mock>('pdf-parse');
-      pdfParse.mockRejectedValueOnce(new Error('Invalid PDF structure'));
-      (fs.promises.readFile as jest.Mock).mockResolvedValue(Buffer.from('%PDF-'));
-      (prisma.document.update as jest.Mock).mockImplementation(({ data }: { data: { status: string } }) =>
-        Promise.resolve(data.status === 'PROCESSING' ? { sessionId: SESSION_ID } : {}),
-      );
+    // ---------------------------------------------------------------------------
+    // onFailed hook
+    // ---------------------------------------------------------------------------
 
-      await expect(processor.process(makeJob({ mimeType: 'application/pdf' }))).rejects.toThrow();
+    describe('onFailed', () => {
+      it('logs error event with jobId, documentId, and attempt count', async () => {
+        const logSpy = jest.spyOn((processor as unknown as { logger: { error: jest.Mock } }).logger, 'error').mockImplementation(() => undefined);
+        const job = makeJob();
 
-      const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
-        ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
-      );
-      expect(failedCall).toBeDefined();
-      expect(failedCall[0].data.errorMessage).toMatch(/corrupted/i);
-    });
+        await processor.onFailed(job, new Error('final failure'));
 
-    it('sets FAILED with an image-only message when the PDF parses but yields no text', async () => {
-      const pdfParse = jest.requireMock<jest.Mock>('pdf-parse');
-      pdfParse.mockResolvedValueOnce({ text: '   ' }); // whitespace-only — scanned/image PDF
-      (fs.promises.readFile as jest.Mock).mockResolvedValue(Buffer.from('%PDF-'));
-      (prisma.document.update as jest.Mock).mockImplementation(({ data }: { data: { status: string } }) =>
-        Promise.resolve(data.status === 'PROCESSING' ? { sessionId: SESSION_ID } : {}),
-      );
+        expect(logSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: 'job_failed_permanently',
+            jobId: 'job-1',
+            documentId: DOCUMENT_ID,
+          }),
+        );
+      });
 
-      await expect(processor.process(makeJob({ mimeType: 'application/pdf' }))).rejects.toThrow();
+      it('deletes orphan file when all retries are exhausted (attemptsMade === attempts)', async () => {
+        const job = makeJob({}, { attemptsMade: 3, opts: { attempts: 3 } });
 
-      const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
-        ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
-      );
-      expect(failedCall).toBeDefined();
-      expect(failedCall[0].data.errorMessage).toMatch(/images or scanned/i);
-    });
+        await processor.onFailed(job, new Error('all retries exhausted'));
 
-    it('sets FAILED with a binary-data message when a plain-text file contains null bytes', async () => {
-      (fs.promises.readFile as jest.Mock).mockResolvedValue('header,value\x00\x01\x02garbage');
-      (prisma.document.update as jest.Mock).mockImplementation(({ data }: { data: { status: string } }) =>
-        Promise.resolve(data.status === 'PROCESSING' ? { sessionId: SESSION_ID } : {}),
-      );
+        expect(fs.promises.unlink).toHaveBeenCalledWith(FILE_PATH);
+      });
 
-      await expect(processor.process(makeJob({ mimeType: 'text/csv' }))).rejects.toThrow();
+      it('does NOT delete file on intermediate failure when retries remain', async () => {
+        const job = makeJob({}, { attemptsMade: 1, opts: { attempts: 3 } });
 
-      const failedCall = (prisma.document.update as jest.Mock).mock.calls.find(
-        ([args]: [{ data: { status: string } }]) => args.data.status === 'FAILED',
-      );
-      expect(failedCall).toBeDefined();
-      expect(failedCall[0].data.errorMessage).toMatch(/binary data/i);
+        await processor.onFailed(job, new Error('attempt 1 failed'));
+
+        expect(fs.promises.unlink).not.toHaveBeenCalled();
+      });
+
+      it('logs warn (does not throw) if orphan file delete fails on final failure', async () => {
+        (fs.promises.unlink as jest.Mock).mockRejectedValue(new Error('ENOENT'));
+        const job = makeJob({}, { attemptsMade: 3, opts: { attempts: 3 } });
+
+        await expect(processor.onFailed(job, new Error('final failure'))).resolves.toBeUndefined();
+      });
     });
   });
 
   // ---------------------------------------------------------------------------
-  // onFailed hook
+  // postProcessPdfText — pure function unit tests
   // ---------------------------------------------------------------------------
 
-  describe('onFailed', () => {
-    it('logs error event with jobId, documentId, and attempt count', async () => {
-      const logSpy = jest.spyOn((processor as unknown as { logger: { error: jest.Mock } }).logger, 'error').mockImplementation(() => undefined);
-      const job = makeJob();
-
-      await processor.onFailed(job, new Error('final failure'));
-
-      expect(logSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: 'job_failed_permanently',
-          jobId: 'job-1',
-          documentId: DOCUMENT_ID,
-        }),
-      );
+  describe('postProcessPdfText', () => {
+    it('rejoins a mid-dot superscript exponent separated by a newline', () => {
+      expect(postProcessPdfText('2.3·10\n19')).toBe('2.3·10^19');
     });
 
-    it('deletes orphan file when all retries are exhausted (attemptsMade === attempts)', async () => {
-      const job = makeJob({}, { attemptsMade: 3, opts: { attempts: 3 } });
-
-      await processor.onFailed(job, new Error('all retries exhausted'));
-
-      expect(fs.promises.unlink).toHaveBeenCalledWith(FILE_PATH);
+    it('rejoins a multiplication-sign superscript exponent separated by a newline', () => {
+      expect(postProcessPdfText('1.4×10\n20')).toBe('1.4×10^20');
     });
 
-    it('does NOT delete file on intermediate failure when retries remain', async () => {
-      const job = makeJob({}, { attemptsMade: 1, opts: { attempts: 3 } });
-
-      await processor.onFailed(job, new Error('attempt 1 failed'));
-
-      expect(fs.promises.unlink).not.toHaveBeenCalled();
+    it('handles Windows-style CRLF line endings', () => {
+      expect(postProcessPdfText('9.6·10\r\n18')).toBe('9.6·10^18');
     });
 
-    it('logs warn (does not throw) if orphan file delete fails on final failure', async () => {
-      (fs.promises.unlink as jest.Mock).mockRejectedValue(new Error('ENOENT'));
-      const job = makeJob({}, { attemptsMade: 3, opts: { attempts: 3 } });
+    it('fixes multiple occurrences in one pass', () => {
+      const input =
+        'GNMT + RL 2.3·10\n19\n1.4·10\n20\nTransformer (big) 2.3·10\n19\n';
+      const output = postProcessPdfText(input);
+      expect(output).toContain('2.3·10^19');
+      expect(output).toContain('1.4·10^20');
+      expect(output).not.toMatch(/·10\n\d/);
+    });
 
-      await expect(processor.onFailed(job, new Error('final failure'))).resolves.toBeUndefined();
+    it('does not alter text without the superscript pattern', () => {
+      const clean = 'Training took 3.5 days on 8 P100 GPUs.';
+      expect(postProcessPdfText(clean)).toBe(clean);
+    });
+
+    it('does not alter a standalone number on a new line unrelated to ·10', () => {
+      const text = 'Section\n19\nsome content';
+      expect(postProcessPdfText(text)).toBe(text);
+    });
+
+    it('replaces STX (\\u0002) with "="', () => {
+      expect(postProcessPdfText('b  0.85')).toBe('b = 0.85');
+    });
+
+    it('replaces EOT (\\u0004) with "<"', () => {
+      expect(postProcessPdfText('p  .001')).toBe('p < .001');
+    });
+
+    it('replaces ENQ (\\u0005) with "-"', () => {
+      expect(postProcessPdfText('b  0.85')).toBe('b = -0.85');
+    });
+
+    it('fixes all three control characters in a realistic stat string', () => {
+      const raw = 'GISO (b  0.85, p  .001)';
+      expect(postProcessPdfText(raw)).toBe('GISO (b = -0.85, p < .001)');
+    });
+
+    it('applies control-char replacements and exponent rejoining in one pass', () => {
+      const raw = 'r  .58, 2.3·10\n19';
+      expect(postProcessPdfText(raw)).toBe('r = .58, 2.3·10^19');
     });
   });
-});
-
-// ---------------------------------------------------------------------------
-// postProcessPdfText — pure function unit tests
-// ---------------------------------------------------------------------------
-
-describe('postProcessPdfText', () => {
-  it('rejoins a mid-dot superscript exponent separated by a newline', () => {
-    expect(postProcessPdfText('2.3·10\n19')).toBe('2.3·10^19');
-  });
-
-  it('rejoins a multiplication-sign superscript exponent separated by a newline', () => {
-    expect(postProcessPdfText('1.4×10\n20')).toBe('1.4×10^20');
-  });
-
-  it('handles Windows-style CRLF line endings', () => {
-    expect(postProcessPdfText('9.6·10\r\n18')).toBe('9.6·10^18');
-  });
-
-  it('fixes multiple occurrences in one pass', () => {
-    const input =
-      'GNMT + RL 2.3·10\n19\n1.4·10\n20\nTransformer (big) 2.3·10\n19\n';
-    const output = postProcessPdfText(input);
-    expect(output).toContain('2.3·10^19');
-    expect(output).toContain('1.4·10^20');
-    expect(output).not.toMatch(/·10\n\d/);
-  });
-
-  it('does not alter text without the superscript pattern', () => {
-    const clean = 'Training took 3.5 days on 8 P100 GPUs.';
-    expect(postProcessPdfText(clean)).toBe(clean);
-  });
-
-  it('does not alter a standalone number on a new line unrelated to ·10', () => {
-    const text = 'Section\n19\nsome content';
-    expect(postProcessPdfText(text)).toBe(text);
-  });
-});

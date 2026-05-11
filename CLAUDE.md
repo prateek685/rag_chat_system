@@ -370,6 +370,60 @@ try {
 - If a new phase starts that has no memory file yet, create one following the existing naming pattern (e.g. `project_m3_status.md`) and add it to `MEMORY.md`.
 - Memory files are the single source of truth for project progress. If the memory file says a step is done, it must be genuinely done — not just coded but untested.
 
+### 6. Debugging Runbook — Trace-First Investigation
+
+**When the user reports an unexpected response, always start with the Langfuse trace. Never guess.**
+
+**Trigger**: User says the response was wrong / unexpected and provides a `traceId`.
+
+**Step-by-step flow:**
+
+```
+1. FETCH TRACE
+   npx langfuse-cli api traces get <traceId>
+   → Captures: input query, final output, all observations, scores, e2e latency.
+
+2. CHECK ROUTER (observation name: "router")
+   → Was the route correct? (RAG_QUERY / GREETING / VIOLATION)
+   → Was latency within 300ms budget?
+   → If misrouted: root cause is the router model or prompt — stop here.
+
+3. CHECK RETRIEVAL (observation name: "retrieval")
+   → How many chunks returned? What are the cosine similarity scores?
+   → Read contentPreview of each chunk — is the answer actually present in any chunk?
+   → If top similarity < 0.30: guardrail should have fired — check why it didn't.
+   → If answer IS in a chunk but model said it wasn't: data quality or model failure — go to step 5.
+   → If answer is NOT in any chunk: retrieval failure — root cause is embedding/search quality.
+
+4. CHECK RERANKER (observation name: "reranker")
+   → Were chunks reordered? Did the right chunk surface to position 1?
+   → If reranker span is absent: reranker was skipped — check timeout/fallback path.
+
+5. CHECK GENERATOR INPUT (observation name: "generator" → input field)
+   → Read the FULL message array fed to the model:
+     - Are the right chunks present in the context message?
+     - Is the data in a parseable format (no merged PDF columns, no truncation)?
+     - Is the system prompt last (Safety Caboose)?
+     - Is conversation history correct (no orphaned assistant turns)?
+   → If data IS present but model said it wasn't: model comprehension failure — root cause
+     is either data format (PDF table merging) or model capability (free-tier model).
+
+6. IDENTIFY ROOT CAUSE — use this decision tree:
+   Misrouted?            → Router model/prompt bug
+   Answer not in chunks? → Embedding/chunking/retrieval bug
+   Chunks present, model failed to read? → Data format bug (fix at document processor)
+   Chunks present, model ignored rules?  → Model capability (upgrade model)
+   Correct answer, wrong format/citation? → Prompt/post-processing bug
+
+7. DO NOT propose a fix until you can point to the exact observation, field, and value
+   that proves the root cause. "The model probably..." is not a root cause.
+```
+
+**Scores to always check:**
+- `keyword-overlap` < 0.30 → response likely doesn't use retrieved context
+- Router latency > 300ms → model too slow, budget breached
+- TTFT > 800ms → generator too slow, budget breached
+
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph
 
