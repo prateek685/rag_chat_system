@@ -44,17 +44,31 @@ export default function ChatPage() {
 
   const [isDark, setIsDark] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true);
 
   useEffect(() => {
     const stored = readStorage<string>(THEME_KEY, '');
     if (stored === 'dark') {
       setIsDark(true);
+      document.documentElement.classList.add('dark');
     } else if (stored === 'light') {
       setIsDark(false);
       document.documentElement.classList.remove('dark');
     } else {
-      const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      setIsDark(systemDark);
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      const apply = (dark: boolean) => {
+        setIsDark(dark);
+        document.documentElement.classList.toggle('dark', dark);
+      };
+      apply(mq.matches);
+      // Only follow OS changes while user has no explicit preference stored.
+      // Once toggleDark() writes 'light'/'dark', this guard prevents the listener
+      // from overriding that choice on the next OS theme change.
+      const listener = (e: MediaQueryListEvent) => {
+        if (!readStorage<string>(THEME_KEY, '')) apply(e.matches);
+      };
+      mq.addEventListener('change', listener);
+      return () => mq.removeEventListener('change', listener);
     }
   }, []);
 
@@ -80,10 +94,15 @@ export default function ChatPage() {
           isDark={isDark}
           onToggleDark={toggleDark}
           onOpenSidebar={() => setSidebarOpen(true)}
+          desktopSidebarOpen={desktopSidebarOpen}
+          onToggleDesktopSidebar={() => setDesktopSidebarOpen((v) => !v)}
         />
 
         {streamError && (
-          <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-2 dark:border-amber-800/50 dark:bg-amber-900/20">
+          <div
+            role="alert"
+            className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-2 dark:border-amber-800/50 dark:bg-amber-900/20"
+          >
             <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
               <p className="text-sm text-amber-800 dark:text-amber-300">
                 {streamError}
@@ -100,8 +119,16 @@ export default function ChatPage() {
         )}
 
         <div className="flex min-h-0 flex-1 overflow-hidden">
-          {/* Desktop sidebar */}
-          <div className="hidden md:flex">
+          {/* Desktop sidebar — animated width collapse */}
+          <div
+            id="desktop-sidebar"
+            className="hidden shrink-0 overflow-hidden md:block"
+            style={{
+              width: desktopSidebarOpen ? '288px' : '0px',
+              transition: 'width 280ms cubic-bezier(0.4, 0, 0.2, 1)',
+            }}
+            inert={!desktopSidebarOpen}
+          >
             <Sidebar {...sidebarProps} onUpload={uploadFiles} />
           </div>
 

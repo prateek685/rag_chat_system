@@ -14,7 +14,7 @@ export interface UseChatReturn {
   sendMessage: (text: string) => void;
   stopStreaming: () => void;
   retryLast: () => void;
-  submitFeedback: (traceId: string, score: 1 | -1) => void;
+  submitFeedback: (traceId: string, score: 1 | -1 | 0) => void;
 }
 
 export function useChat(sessionId: string): UseChatReturn {
@@ -31,14 +31,10 @@ export function useChat(sessionId: string): UseChatReturn {
     setMessages(readStorage<Message[]>(msgsKey(sessionId), []));
   }, [sessionId]);
 
-  // Reactively persist messages on every state change — single authoritative write point.
-  // Guard with messages.length > 0 to avoid overwriting stored data during the initial
-  // empty render before hydration completes.
-  useEffect(() => {
-    if (sessionIdRef.current && messages.length > 0) {
-      writeStorage(msgsKey(sessionIdRef.current), messages);
-    }
-  }, [messages]);
+  // NOTE: localStorage writes are handled surgically:
+  //   1. After streaming completes (in stream() finally) — avoids 100+ writes per response.
+  //   2. After submitFeedback — so feedback survives a page reload immediately.
+  // A reactive effect is intentionally NOT used here to avoid storage thrashing.
 
   const stream = useCallback(
     async (endpoint: string, body: Record<string, unknown>, isRetry: boolean) => {
@@ -180,6 +176,13 @@ export function useChat(sessionId: string): UseChatReturn {
       } finally {
         abortRef.current = null;
         setIsStreaming(false);
+        // Single write per stream — avoids 100+ writes during token delivery.
+        setMessages((prev) => {
+          if (sessionIdRef.current) {
+            writeStorage(msgsKey(sessionIdRef.current), prev);
+          }
+          return prev;
+        });
       }
     },
     [],
@@ -207,10 +210,20 @@ export function useChat(sessionId: string): UseChatReturn {
     );
   }
 
-  function submitFeedback(traceId: string, score: 1 | -1): void {
-    setMessages((prev) =>
-      prev.map((m) => (m.traceId === traceId ? { ...m, feedback: score } : m)),
-    );
+  function submitFeedback(traceId: string, score: 1 | -1 | 0): void {
+    setMessages((prev) => {
+      const updated = prev.map((m) =>
+        m.traceId === traceId
+          ? { ...m, feedback: score === 0 ? undefined : score }
+          : m,
+      );
+      if (sessionIdRef.current) {
+        writeStorage(msgsKey(sessionIdRef.current), updated);
+      }
+      return updated;
+    });
+    // Always sync to the backend so Langfuse reflects the current state.
+    // score 0 overwrites any previously recorded 1/-1 with a neutral value.
     apiSubmitFeedback({ traceId, score }).catch((err: unknown) => {
       console.warn('Feedback submission failed:', err);
     });

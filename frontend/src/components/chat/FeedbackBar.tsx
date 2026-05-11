@@ -13,7 +13,7 @@ interface FeedbackBarProps {
   traceId: string | undefined;
   feedback: 1 | -1 | undefined;
   isLast: boolean;
-  onFeedback: (traceId: string, score: 1 | -1) => void;
+  onFeedback: (traceId: string, score: 1 | -1 | 0) => void;
   onRetry: () => void;
 }
 
@@ -34,11 +34,13 @@ export function FeedbackBar({
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  onClick={() => traceId && onFeedback(traceId, 1)}
+                  onClick={() =>
+                    traceId && onFeedback(traceId, feedback === 1 ? 0 : 1)
+                  }
                   className={cn(
-                    feedback === 1 && 'text-blue-500 hover:text-blue-500',
                     feedback !== undefined && feedback !== 1 && 'opacity-30',
                   )}
+                  style={feedback === 1 ? { color: 'oklch(0.58 0.13 220)' } : undefined}
                 />
               }
             >
@@ -54,11 +56,13 @@ export function FeedbackBar({
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  onClick={() => traceId && onFeedback(traceId, -1)}
+                  onClick={() =>
+                    traceId && onFeedback(traceId, feedback === -1 ? 0 : -1)
+                  }
                   className={cn(
-                    feedback === -1 && 'text-destructive hover:text-destructive',
                     feedback !== undefined && feedback !== -1 && 'opacity-30',
                   )}
+                  style={feedback === -1 ? { color: 'oklch(0.58 0.13 220)' } : undefined}
                 />
               }
             >
