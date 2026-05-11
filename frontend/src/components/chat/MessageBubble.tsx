@@ -158,7 +158,7 @@ function MessageBubbleInner({
           className={cn(
             'rounded-2xl rounded-bl-sm bg-card px-4 py-3 text-sm outline-none',
             'border border-border/50',
-            'prose prose-sm dark:prose-invert max-w-none',
+            'prose prose-sm dark:prose-invert max-w-none break-words',
             'prose-p:my-1 prose-p:leading-relaxed',
             'prose-headings:font-semibold',
             'prose-code:rounded prose-code:bg-muted-foreground/10 prose-code:px-1 prose-code:text-foreground',

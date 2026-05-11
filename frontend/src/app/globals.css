@@ -203,6 +203,11 @@
   padding-bottom: 0.25rem; /* keeps descenders visible when scrollbar appears  */
 }
 
+/* Inline math: cap to parent width so long expressions don't break the bubble */
+.katex {
+  max-width: 100%;
+}
+
 /* ─── Reduce Motion ─────────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
